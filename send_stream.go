@@ -10,6 +10,7 @@ import (
 	"github.com/quic-go/quic-go/internal/flowcontrol"
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/utils"
 	"github.com/quic-go/quic-go/internal/wire"
 )
 
@@ -281,7 +282,7 @@ func (s *SendStream) popNewOrRetransmittedStreamFrame(maxBytes protocol.ByteCoun
 	// if the stream is canceled, only data up to the reliable size needs to be sent
 	reliableOffset := s.reliableOffset()
 	if s.resetErr != nil && reliableOffset > 0 {
-		maxDataLen = min(maxDataLen, reliableOffset-s.writeOffset)
+		maxDataLen = utils.Min(maxDataLen, reliableOffset-s.writeOffset)
 	}
 	f, hasMoreData := s.popNewStreamFrame(maxBytes, maxDataLen, v)
 	if f == nil {
@@ -311,7 +312,7 @@ func (s *SendStream) popNewOrRetransmittedStreamFrame(maxBytes protocol.ByteCoun
 // hasMoreData says if there's more data to send, *not* taking into account the reliable size
 func (s *SendStream) popNewStreamFrame(maxBytes, maxDataLen protocol.ByteCount, v protocol.Version) (_ *wire.StreamFrame, hasMoreData bool) {
 	if s.nextFrame != nil {
-		maxDataLen := min(maxDataLen, s.nextFrame.MaxDataLen(maxBytes, v))
+		maxDataLen := utils.Min(maxDataLen, s.nextFrame.MaxDataLen(maxBytes, v))
 		if maxDataLen == 0 {
 			return nil, true
 		}
@@ -351,7 +352,7 @@ func (s *SendStream) popNewStreamFrameWithoutBuffer(f *wire.StreamFrame, maxByte
 	if maxDataLen == 0 { // a STREAM frame must have at least one byte of data
 		return s.dataForWriting != nil || s.nextFrame != nil || s.finishedWriting
 	}
-	s.getDataForWriting(f, min(maxDataLen, sendWindow))
+	s.getDataForWriting(f, utils.Min(maxDataLen, sendWindow))
 
 	return s.dataForWriting != nil || s.nextFrame != nil || s.finishedWriting
 }
@@ -502,7 +503,7 @@ func (s *SendStream) CancelWrite(errorCode StreamErrorCode) {
 	}
 	s.queuedResetStreamFrame = &wire.ResetStreamFrame{
 		StreamID:  s.streamID,
-		FinalSize: max(s.writeOffset, reliableOffset),
+		FinalSize: utils.Max(s.writeOffset, reliableOffset),
 		ErrorCode: errorCode,
 		// if the peer doesn't support the extension, the reliable offset will always be 0
 		ReliableSize: reliableOffset,

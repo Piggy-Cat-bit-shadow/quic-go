@@ -16,6 +16,7 @@ import (
 	"github.com/quic-go/quic-go"
 	quicproxy "github.com/quic-go/quic-go/integrationtests/tools/proxy"
 	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/utils"
 	"github.com/quic-go/quic-go/logging"
 
 	"github.com/stretchr/testify/require"
@@ -166,7 +167,7 @@ func TestKeepAlive(t *testing.T) {
 	idleTimeout := scaleDuration(150 * time.Millisecond)
 	if runtime.GOOS == "windows" {
 		// increase the duration, since timers on Windows are not very precise
-		idleTimeout = max(idleTimeout, 600*time.Millisecond)
+		idleTimeout = utils.Max(idleTimeout, 600*time.Millisecond)
 	}
 
 	server, err := quic.Listen(
@@ -235,7 +236,7 @@ func TestTimeoutAfterInactivity(t *testing.T) {
 	idleTimeout := scaleDuration(150 * time.Millisecond)
 	if runtime.GOOS == "windows" {
 		// increase the duration, since timers on Windows are not very precise
-		idleTimeout = max(idleTimeout, 600*time.Millisecond)
+		idleTimeout = utils.Max(idleTimeout, 600*time.Millisecond)
 	}
 
 	server, err := quic.Listen(
@@ -291,7 +292,7 @@ func TestTimeoutAfterInactivity(t *testing.T) {
 	// and we'd expect to receive an ACK for additional other ack-eliciting packet sent.
 	timeSinceLastAckEliciting := time.Since(lastAckElicitingPacketSentAt)
 	timeSinceLastRcvd := time.Since(lastPacketRcvdAt)
-	maxDuration := max(timeSinceLastAckEliciting, timeSinceLastRcvd)
+	maxDuration := utils.Max(timeSinceLastAckEliciting, timeSinceLastRcvd)
 	require.GreaterOrEqual(t, maxDuration, idleTimeout)
 	require.Less(t, maxDuration, idleTimeout*6/5)
 
@@ -308,7 +309,7 @@ func TestTimeoutAfterSendingPacket(t *testing.T) {
 	idleTimeout := scaleDuration(150 * time.Millisecond)
 	if runtime.GOOS == "windows" {
 		// increase the duration, since timers on Windows are not very precise
-		idleTimeout = max(idleTimeout, 600*time.Millisecond)
+		idleTimeout = utils.Max(idleTimeout, 600*time.Millisecond)
 	}
 
 	server, err := quic.Listen(

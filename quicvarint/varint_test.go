@@ -6,6 +6,8 @@ import (
 	"math/rand/v2"
 	"testing"
 
+	"github.com/quic-go/quic-go/internal/utils"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -190,10 +192,10 @@ func randomValues(num int, maxValue uint64) []benchmarkValue {
 }
 
 func BenchmarkRead(b *testing.B) {
-	b.Run("1-byte", func(b *testing.B) { benchmarkRead(b, randomValues(min(b.N, 1024), maxVarInt1)) })
-	b.Run("2-byte", func(b *testing.B) { benchmarkRead(b, randomValues(min(b.N, 1024), maxVarInt2)) })
-	b.Run("4-byte", func(b *testing.B) { benchmarkRead(b, randomValues(min(b.N, 1024), maxVarInt4)) })
-	b.Run("8-byte", func(b *testing.B) { benchmarkRead(b, randomValues(min(b.N, 1024), maxVarInt8)) })
+	b.Run("1-byte", func(b *testing.B) { benchmarkRead(b, randomValues(utils.Min(b.N, 1024), maxVarInt1)) })
+	b.Run("2-byte", func(b *testing.B) { benchmarkRead(b, randomValues(utils.Min(b.N, 1024), maxVarInt2)) })
+	b.Run("4-byte", func(b *testing.B) { benchmarkRead(b, randomValues(utils.Min(b.N, 1024), maxVarInt4)) })
+	b.Run("8-byte", func(b *testing.B) { benchmarkRead(b, randomValues(utils.Min(b.N, 1024), maxVarInt8)) })
 }
 
 func benchmarkRead(b *testing.B, inputs []benchmarkValue) {
@@ -213,10 +215,10 @@ func benchmarkRead(b *testing.B, inputs []benchmarkValue) {
 }
 
 func BenchmarkParse(b *testing.B) {
-	b.Run("1-byte", func(b *testing.B) { benchmarkParse(b, randomValues(min(b.N, 1024), maxVarInt1)) })
-	b.Run("2-byte", func(b *testing.B) { benchmarkParse(b, randomValues(min(b.N, 1024), maxVarInt2)) })
-	b.Run("4-byte", func(b *testing.B) { benchmarkParse(b, randomValues(min(b.N, 1024), maxVarInt4)) })
-	b.Run("8-byte", func(b *testing.B) { benchmarkParse(b, randomValues(min(b.N, 1024), maxVarInt8)) })
+	b.Run("1-byte", func(b *testing.B) { benchmarkParse(b, randomValues(utils.Min(b.N, 1024), maxVarInt1)) })
+	b.Run("2-byte", func(b *testing.B) { benchmarkParse(b, randomValues(utils.Min(b.N, 1024), maxVarInt2)) })
+	b.Run("4-byte", func(b *testing.B) { benchmarkParse(b, randomValues(utils.Min(b.N, 1024), maxVarInt4)) })
+	b.Run("8-byte", func(b *testing.B) { benchmarkParse(b, randomValues(utils.Min(b.N, 1024), maxVarInt8)) })
 }
 
 func benchmarkParse(b *testing.B, inputs []benchmarkValue) {
@@ -237,10 +239,10 @@ func benchmarkParse(b *testing.B, inputs []benchmarkValue) {
 }
 
 func BenchmarkAppend(b *testing.B) {
-	b.Run("1-byte", func(b *testing.B) { benchmarkAppend(b, randomValues(min(b.N, 1024), maxVarInt1)) })
-	b.Run("2-byte", func(b *testing.B) { benchmarkAppend(b, randomValues(min(b.N, 1024), maxVarInt2)) })
-	b.Run("4-byte", func(b *testing.B) { benchmarkAppend(b, randomValues(min(b.N, 1024), maxVarInt4)) })
-	b.Run("8-byte", func(b *testing.B) { benchmarkAppend(b, randomValues(min(b.N, 1024), maxVarInt8)) })
+	b.Run("1-byte", func(b *testing.B) { benchmarkAppend(b, randomValues(utils.Min(b.N, 1024), maxVarInt1)) })
+	b.Run("2-byte", func(b *testing.B) { benchmarkAppend(b, randomValues(utils.Min(b.N, 1024), maxVarInt2)) })
+	b.Run("4-byte", func(b *testing.B) { benchmarkAppend(b, randomValues(utils.Min(b.N, 1024), maxVarInt4)) })
+	b.Run("8-byte", func(b *testing.B) { benchmarkAppend(b, randomValues(utils.Min(b.N, 1024), maxVarInt8)) })
 }
 
 func benchmarkAppend(b *testing.B, inputs []benchmarkValue) {
@@ -258,10 +260,10 @@ func benchmarkAppend(b *testing.B, inputs []benchmarkValue) {
 }
 
 func BenchmarkAppendWithLen(b *testing.B) {
-	b.Run("1-byte", func(b *testing.B) { benchmarkAppendWithLen(b, randomValues(min(b.N, 1024), maxVarInt1)) })
-	b.Run("2-byte", func(b *testing.B) { benchmarkAppendWithLen(b, randomValues(min(b.N, 1024), maxVarInt2)) })
-	b.Run("4-byte", func(b *testing.B) { benchmarkAppendWithLen(b, randomValues(min(b.N, 1024), maxVarInt4)) })
-	b.Run("8-byte", func(b *testing.B) { benchmarkAppendWithLen(b, randomValues(min(b.N, 1024), maxVarInt8)) })
+	b.Run("1-byte", func(b *testing.B) { benchmarkAppendWithLen(b, randomValues(utils.Min(b.N, 1024), maxVarInt1)) })
+	b.Run("2-byte", func(b *testing.B) { benchmarkAppendWithLen(b, randomValues(utils.Min(b.N, 1024), maxVarInt2)) })
+	b.Run("4-byte", func(b *testing.B) { benchmarkAppendWithLen(b, randomValues(utils.Min(b.N, 1024), maxVarInt4)) })
+	b.Run("8-byte", func(b *testing.B) { benchmarkAppendWithLen(b, randomValues(utils.Min(b.N, 1024), maxVarInt8)) })
 }
 
 func benchmarkAppendWithLen(b *testing.B, inputs []benchmarkValue) {

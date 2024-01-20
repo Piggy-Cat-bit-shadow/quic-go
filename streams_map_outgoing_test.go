@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/utils"
 	"github.com/quic-go/quic-go/internal/wire"
 
 	"github.com/stretchr/testify/assert"
@@ -315,7 +316,7 @@ func TestStreamsMapOutgoingRandomizedOpenStreamSync(t *testing.T) {
 		t.Logf("setting stream limit to %d", limit)
 		m.SetMaxStream(protocol.StreamNum(limit))
 
-		for range min(add, n-(limit-add)) {
+		for range utils.Min(add, n-(limit-add)) {
 			select {
 			case res := <-resultChan:
 				require.NoError(t, res.err)
@@ -400,7 +401,7 @@ func TestStreamsMapOutgoingRandomizedWithCancellation(t *testing.T) {
 		t.Logf("setting stream limit to %d", limit)
 		m.SetMaxStream(protocol.StreamNum(limit))
 
-		for lastStreamSeen < min(n, protocol.StreamNum(limit)) {
+		for lastStreamSeen < utils.Min(n, protocol.StreamNum(limit)) {
 			select {
 			case res := <-resultChan:
 				if errors.Is(res.err, context.Canceled) {

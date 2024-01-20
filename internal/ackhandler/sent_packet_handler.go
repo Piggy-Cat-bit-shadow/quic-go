@@ -261,7 +261,7 @@ func (h *sentPacketHandler) SentPacket(
 
 	pnSpace := h.getPacketNumberSpace(encLevel)
 	if h.logger.Debug() && (pnSpace.history.HasOutstandingPackets() || pnSpace.history.HasOutstandingPathProbes()) {
-		for p := max(0, pnSpace.largestSent+1); p < pn; p++ {
+		for p := utils.Max(0, pnSpace.largestSent+1); p < pn; p++ {
 			h.logger.Debugf("Skipping packet number %d", p)
 		}
 	}
@@ -369,7 +369,7 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 			// don't use the ack delay for Initial and Handshake packets
 			var ackDelay time.Duration
 			if encLevel == protocol.Encryption1RTT {
-				ackDelay = min(ack.DelayTime, h.rttStats.MaxAckDelay())
+				ackDelay = utils.Min(ack.DelayTime, h.rttStats.MaxAckDelay())
 			}
 			h.rttStats.UpdateRTT(rcvTime.Sub(p.SendTime), ackDelay)
 			if h.logger.Debug() {
@@ -387,7 +387,7 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 		}
 	}
 
-	pnSpace.largestAcked = max(pnSpace.largestAcked, largestAcked)
+	pnSpace.largestAcked = utils.Max(pnSpace.largestAcked, largestAcked)
 
 	h.detectLostPackets(rcvTime, encLevel)
 	h.ackedPacketsInfo = h.ackedPacketsInfo[:0]
@@ -498,7 +498,7 @@ func (h *sentPacketHandler) detectAndRemoveAckedPackets(ack *wire.AckFrame, encL
 
 	for _, p := range h.ackedPackets {
 		if p.LargestAcked != protocol.InvalidPacketNumber && encLevel == protocol.Encryption1RTT {
-			h.lowestNotConfirmedAcked = max(h.lowestNotConfirmedAcked, p.LargestAcked+1)
+			h.lowestNotConfirmedAcked = utils.Max(h.lowestNotConfirmedAcked, p.LargestAcked+1)
 		}
 
 		for _, f := range p.Frames {
@@ -688,11 +688,11 @@ func (h *sentPacketHandler) detectLostPackets(now time.Time, encLevel protocol.E
 	pnSpace := h.getPacketNumberSpace(encLevel)
 	pnSpace.lossTime = time.Time{}
 
-	maxRTT := float64(max(h.rttStats.LatestRTT(), h.rttStats.SmoothedRTT()))
+	maxRTT := float64(utils.Max(h.rttStats.LatestRTT(), h.rttStats.SmoothedRTT()))
 	lossDelay := time.Duration(timeThreshold * maxRTT)
 
 	// Minimum time of granularity before packets are deemed lost.
-	lossDelay = max(lossDelay, protocol.TimerGranularity)
+	lossDelay = utils.Max(lossDelay, protocol.TimerGranularity)
 
 	// Packets sent before this time are deemed lost.
 	lostSendTime := now.Add(-lossDelay)
@@ -989,7 +989,7 @@ func (h *sentPacketHandler) ResetForRetry(now time.Time) {
 	// Otherwise, we don't know which Initial the Retry was sent in response to.
 	if h.ptoCount == 0 {
 		// Don't set the RTT to a value lower than 5ms here.
-		h.rttStats.UpdateRTT(max(minRTTAfterRetry, now.Sub(firstPacketSendTime)), 0)
+		h.rttStats.UpdateRTT(utils.Max(minRTTAfterRetry, now.Sub(firstPacketSendTime)), 0)
 		if h.logger.Debug() {
 			h.logger.Debugf("\tupdated RTT: %s (σ: %s)", h.rttStats.SmoothedRTT(), h.rttStats.MeanDeviation())
 		}

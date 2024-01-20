@@ -6,8 +6,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	mrand "github.com/metacubex/randv2"
-	"golang.org/x/exp/slices"
 	"io"
 	"net"
 	"os"
@@ -15,11 +13,15 @@ import (
 	"testing"
 	"time"
 
+	mrand "github.com/metacubex/randv2"
+	"golang.org/x/exp/slices"
+
 	"github.com/quic-go/quic-go/internal/ackhandler"
 	"github.com/quic-go/quic-go/internal/mocks"
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/internal/synctest"
+	"github.com/quic-go/quic-go/internal/utils"
 	"github.com/quic-go/quic-go/internal/wire"
 
 	"github.com/stretchr/testify/assert"
@@ -1525,9 +1527,9 @@ func TestSendStreamResetStreamAtRandomized(t *testing.T) {
 		for len(b) > 0 {
 			m := mrand.IntN(1024)
 			if offset < reliableOffset {
-				m = min(m, reliableOffset-offset)
+				m = utils.Min(m, reliableOffset-offset)
 			}
-			n, err := str.Write(b[:min(m, len(b))])
+			n, err := str.Write(b[:utils.Min(m, len(b))])
 			if err != nil {
 				errChan <- err
 				return
@@ -1597,7 +1599,7 @@ func TestSendStreamResetStreamAtRandomized(t *testing.T) {
 				if mrand.Int()%2 == 0 {
 					f.Handler.OnLost(f.Frame)
 				} else {
-					highestOffset = max(highestOffset, int(sf.Offset+sf.DataLen()))
+					highestOffset = utils.Max(highestOffset, int(sf.Offset+sf.DataLen()))
 					copy(received[sf.Offset:sf.Offset+sf.DataLen()], sf.Data)
 					f.Handler.OnAcked(f.Frame)
 				}

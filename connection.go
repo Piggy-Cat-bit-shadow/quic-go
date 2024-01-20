@@ -738,7 +738,7 @@ func (s *connection) ConnectionState() ConnectionState {
 
 // Time when the connection should time out
 func (s *connection) nextIdleTimeoutTime() time.Time {
-	idleTimeout := max(s.idleTimeout, s.rttStats.PTO(true)*3)
+	idleTimeout := utils.Max(s.idleTimeout, s.rttStats.PTO(true)*3)
 	return s.idleTimeoutStartTime().Add(idleTimeout)
 }
 
@@ -748,7 +748,7 @@ func (s *connection) nextKeepAliveTime() time.Time {
 	if s.config.KeepAlivePeriod == 0 || s.keepAlivePingSent {
 		return time.Time{}
 	}
-	keepAliveInterval := max(s.keepAliveInterval, s.rttStats.PTO(true)*3/2)
+	keepAliveInterval := utils.Max(s.keepAliveInterval, s.rttStats.PTO(true)*3/2)
 	return s.lastPacketReceivedTime.Add(keepAliveInterval)
 }
 
@@ -1030,7 +1030,7 @@ func (s *connection) handleShortHeaderPacket(p receivedPacket, isCoalesced bool)
 		wasQueued, err = s.handleUnpackError(err, p, logging.PacketType1RTT)
 		return false, err
 	}
-	s.largestRcvdAppData = max(s.largestRcvdAppData, pn)
+	s.largestRcvdAppData = utils.Max(s.largestRcvdAppData, pn)
 
 	if s.logger.Debug() {
 		s.logger.Debugf("<- Reading packet %d (%d bytes) for connection %s, 1-RTT", pn, p.Size(), destConnID)
@@ -1385,7 +1385,7 @@ func (s *connection) handleUnpackedLongHeaderPacket(
 	s.keepAlivePingSent = false
 
 	if packet.hdr.Type == protocol.PacketType0RTT {
-		s.largestRcvdAppData = max(s.largestRcvdAppData, packet.hdr.PacketNumber)
+		s.largestRcvdAppData = utils.Max(s.largestRcvdAppData, packet.hdr.PacketNumber)
 	}
 
 	var log func([]logging.Frame)
@@ -2037,9 +2037,9 @@ func (s *connection) applyTransportParameters() {
 	s.idleTimeout = s.config.MaxIdleTimeout
 	// If the peer advertised an idle timeout, take the minimum of the values.
 	if params.MaxIdleTimeout > 0 {
-		s.idleTimeout = min(s.idleTimeout, params.MaxIdleTimeout)
+		s.idleTimeout = utils.Min(s.idleTimeout, params.MaxIdleTimeout)
 	}
-	s.keepAliveInterval = min(s.config.KeepAlivePeriod, s.idleTimeout/2)
+	s.keepAliveInterval = utils.Min(s.config.KeepAlivePeriod, s.idleTimeout/2)
 	s.streamsMap.UpdateLimits(params)
 	s.frameParser.SetAckDelayExponent(params.AckDelayExponent)
 	s.connFlowController.UpdateSendWindow(params.InitialMaxData)
@@ -2606,7 +2606,7 @@ func (s *connection) SendDatagram(p []byte) error {
 	f := &wire.DatagramFrame{DataLenPresent: true}
 	// The payload size estimate is conservative.
 	// Under many circumstances we could send a few more bytes.
-	maxDataLen := min(
+	maxDataLen := utils.Min(
 		f.MaxDataLen(s.peerParams.MaxDatagramFrameSize, s.version),
 		protocol.ByteCount(s.currentMTUEstimate.Load()),
 	)

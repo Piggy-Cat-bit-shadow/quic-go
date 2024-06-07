@@ -7,9 +7,9 @@ import (
 	tls "github.com/metacubex/utls"
 	"os"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/integrationtests/tools"
-	"github.com/quic-go/quic-go/logging"
+	"github.com/metacubex/quic-go"
+	"github.com/metacubex/quic-go/integrationtests/tools"
+	"github.com/metacubex/quic-go/logging"
 )
 
 var (

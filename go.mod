@@ -4,6 +4,7 @@ go 1.23
 
 require (
 	github.com/francoispqt/gojay v1.2.13
+	github.com/metacubex/randv2 v0.2.0
 	github.com/metacubex/utls v1.7.0-alpha.1
 	github.com/onsi/ginkgo/v2 v2.9.5
 	github.com/onsi/gomega v1.27.6

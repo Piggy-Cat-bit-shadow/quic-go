@@ -3,7 +3,7 @@ package quic
 import (
 	"context"
 	"errors"
-	"math/rand/v2"
+	rand "github.com/metacubex/randv2"
 	"testing"
 	"time"
 

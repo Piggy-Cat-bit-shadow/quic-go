@@ -4,8 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	mrand "github.com/metacubex/randv2"
 	"math"
-	mrand "math/rand/v2"
 	"sync"
 )
 

@@ -2,8 +2,8 @@ package main
 
 import (
 	"crypto/rand"
+	mrand "github.com/metacubex/randv2"
 	"log"
-	mrand "math/rand/v2"
 
 	"github.com/quic-go/quic-go/fuzzing/header"
 	"github.com/quic-go/quic-go/fuzzing/internal/helper"

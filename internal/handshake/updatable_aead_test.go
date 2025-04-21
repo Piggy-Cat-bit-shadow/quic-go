@@ -3,8 +3,8 @@ package handshake
 import (
 	"crypto/rand"
 	"fmt"
+	mrand "github.com/metacubex/randv2"
 	tls "github.com/metacubex/utls"
-	mrand "math/rand/v2"
 	"testing"
 	"time"
 

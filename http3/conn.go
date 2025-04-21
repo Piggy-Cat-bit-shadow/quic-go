@@ -3,8 +3,8 @@ package http3
 import (
 	"context"
 	"fmt"
+	"golang.org/x/exp/slog"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptrace"

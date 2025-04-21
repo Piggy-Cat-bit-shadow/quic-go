@@ -2,7 +2,7 @@ package quic
 
 import (
 	"context"
-	"slices"
+	"golang.org/x/exp/slices"
 	"sync"
 
 	"github.com/quic-go/quic-go/internal/protocol"

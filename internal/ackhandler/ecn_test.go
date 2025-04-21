@@ -26,11 +26,11 @@ func sendECNTestingPackets(t *testing.T, ecnTracker *ecnTracker, tracer *mocklog
 	t.Helper()
 
 	tracer.EXPECT().ECNStateUpdated(logging.ECNStateTesting, logging.ECNTriggerNoTrigger)
-	for i := range protocol.PacketNumber(9) {
+	for i := 0; i < 9; i++ {
 		require.Equal(t, protocol.ECT0, ecnTracker.Mode())
 		// do this twice to make sure only sent packets are counted
 		require.Equal(t, protocol.ECT0, ecnTracker.Mode())
-		ecnTracker.SentPacket(i, protocol.ECT0)
+		ecnTracker.SentPacket(protocol.PacketNumber(i), protocol.ECT0)
 	}
 	require.Equal(t, protocol.ECT0, ecnTracker.Mode())
 	tracer.EXPECT().ECNStateUpdated(logging.ECNStateUnknown, logging.ECNTriggerNoTrigger)
@@ -48,17 +48,17 @@ func TestECNTestingPacketsLoss(t *testing.T) {
 	sendECNTestingPackets(t, ecnTracker, tracer)
 
 	// send non-testing packets
-	for i := range protocol.PacketNumber(10) {
+	for i := 0; i < 10; i++ {
 		require.Equal(t, protocol.ECNNon, ecnTracker.Mode())
-		ecnTracker.SentPacket(10+i, protocol.ECNNon)
+		ecnTracker.SentPacket(protocol.PacketNumber(10+i), protocol.ECNNon)
 	}
 
 	// lose all but one packet
-	for pn := range protocol.PacketNumber(10) {
+	for pn := 0; pn < 10; pn++ {
 		if pn == 4 {
 			continue
 		}
-		ecnTracker.LostPacket(pn)
+		ecnTracker.LostPacket(protocol.PacketNumber(pn))
 	}
 	// loss of non-testing packets doesn't matter
 	ecnTracker.LostPacket(13)
@@ -77,7 +77,7 @@ func TestECNValidationInTestingState(t *testing.T) {
 	ecnTracker := newECNTracker(utils.DefaultLogger, tr)
 
 	tracer.EXPECT().ECNStateUpdated(logging.ECNStateTesting, logging.ECNTriggerNoTrigger)
-	for i := range 5 {
+	for i := 0; i < 5; i++ {
 		require.Equal(t, protocol.ECT0, ecnTracker.Mode())
 		ecnTracker.SentPacket(protocol.PacketNumber(i), protocol.ECT0)
 	}
@@ -99,13 +99,13 @@ func TestECNValidationInUnknownState(t *testing.T) {
 
 	sendECNTestingPackets(t, ecnTracker, tracer)
 
-	for i := range protocol.PacketNumber(10) {
+	for i := 0; i < 10; i++ {
 		require.Equal(t, protocol.ECNNon, ecnTracker.Mode())
 		pn := 10 + i
-		ecnTracker.SentPacket(pn, protocol.ECNNon)
+		ecnTracker.SentPacket(protocol.PacketNumber(pn), protocol.ECNNon)
 		// lose some packets to make sure this doesn't influence the outcome.
 		if i%2 == 0 {
-			ecnTracker.LostPacket(pn)
+			ecnTracker.LostPacket(protocol.PacketNumber(pn))
 		}
 	}
 	tracer.EXPECT().ECNStateUpdated(logging.ECNStateCapable, logging.ECNTriggerNoTrigger)

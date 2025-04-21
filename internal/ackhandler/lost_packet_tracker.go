@@ -2,7 +2,6 @@ package ackhandler
 
 import (
 	"golang.org/x/exp/slices"
-	"iter"
 
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"

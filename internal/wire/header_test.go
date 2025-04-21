@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
-	mrand "github.com/metacubex/randv2"
 	"io"
 	"testing"
+
+	mrand "github.com/metacubex/randv2"
 
 	"github.com/quic-go/quic-go/internal/protocol"
 
@@ -452,7 +453,7 @@ func BenchmarkIs0RTTPacket(b *testing.B) {
 	src := mrand.NewChaCha8([32]byte{'f', 'o', 'o', 'b', 'a', 'r'})
 	random := mrand.New(src)
 	packets := make([][]byte, 1024)
-	for i := range len(packets) {
+	for i := 0; i < len(packets); i++ {
 		packets[i] = make([]byte, random.IntN(256))
 		src.Read(packets[i])
 	}

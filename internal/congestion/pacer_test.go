@@ -26,7 +26,7 @@ func TestPacerPacing(t *testing.T) {
 	}
 
 	// now packets are being paced
-	for range 5 {
+	for i := 0; i < 5; i++ {
 		require.Zero(t, p.Budget(now))
 		nextPacket := p.TimeUntilSend()
 		require.NotZero(t, nextPacket)
@@ -100,7 +100,7 @@ func TestPacerFastPacing(t *testing.T) {
 	require.Equal(t, 10*initialMaxDatagramSize, p.Budget(now.Add(time.Millisecond)))
 
 	now = now.Add(time.Millisecond)
-	for range 10 {
+	for i := 0; i < 10; i++ {
 		require.NotZero(t, p.Budget(now))
 		p.SentPacket(now, initialMaxDatagramSize)
 	}
@@ -112,7 +112,7 @@ func TestPacerNoOverflows(t *testing.T) {
 	p := newPacer(func() Bandwidth { return infBandwidth })
 	now := time.Now()
 	p.SentPacket(now, initialMaxDatagramSize)
-	for range 100000 {
+	for i := 0; i < 10000; i++ {
 		require.NotZero(t, p.Budget(now.Add(time.Duration(rand.Int64N(math.MaxInt64)))))
 	}
 }

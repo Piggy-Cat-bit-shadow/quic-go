@@ -472,7 +472,7 @@ func testServerRequestHeaderTooLarge(t *testing.T, req *http.Request, maxHeaderB
 	conn.EXPECT().Context().Return(context.Background()).AnyTimes()
 
 	s.handleConn(conn)
-	for range 2 {
+	for i := 0; i < 2; i++ {
 		select {
 		case <-done:
 		case <-time.After(time.Second):
@@ -986,7 +986,7 @@ func TestServerGracefulShutdown(t *testing.T) {
 	}
 
 	// all further streams are getting rejected
-	for range 3 {
+	for i := 0; i < 3; i++ {
 		resetChan := make(chan struct{}, 2)
 		str := mockquic.NewMockStream(mockCtrl)
 		str.EXPECT().StreamID().AnyTimes()
@@ -999,7 +999,7 @@ func TestServerGracefulShutdown(t *testing.T) {
 		})
 		streamChan <- str
 
-		for range 2 {
+		for i := 0; i < 2; i++ {
 			select {
 			case <-resetChan:
 			case <-time.After(time.Second):

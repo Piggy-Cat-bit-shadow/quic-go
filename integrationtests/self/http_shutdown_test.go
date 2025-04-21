@@ -318,7 +318,7 @@ func TestGracefulShutdownPendingStreams(t *testing.T) {
 	}
 
 	// make sure that the server rejects further requests
-	for range 3 {
+	for i := 0; i < 3; i++ {
 		str, err := conn.OpenStreamSync(ctx)
 		require.NoError(t, err)
 		str.Write([]byte("foobar"))
@@ -467,45 +467,47 @@ func testHTTP3ListenerClosing(t *testing.T, graceful, useApplicationListener boo
 			}
 		}()
 
-		for range 2 {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
-			err := dial(t, ctx, u)
-			var h3Err *http3.Error
-			require.ErrorAs(t, err, &h3Err)
-			require.Equal(t, http3.ErrCode(1337), h3Err.ErrorCode)
-			select {
-			case err := <-errChan:
-				require.NoError(t, err)
-			case <-time.After(time.Second):
-				t.Fatal("server did not accept connection")
+		for i := 0; i < 2; i++ {
+			{
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				err := dial(t, ctx, u)
+				var h3Err *http3.Error
+				require.ErrorAs(t, err, &h3Err)
+				require.Equal(t, http3.ErrCode(1337), h3Err.ErrorCode)
+				select {
+				case err := <-errChan:
+					require.NoError(t, err)
+				case <-time.After(time.Second):
+					t.Fatal("server did not accept connection")
+				}
 			}
 		}
-	}
 
-	// the long request should have been terminated
-	if graceful {
-		select {
-		case err := <-longReqChan:
-			t.Fatalf("request should not have terminated: %v", err)
-		case err := <-shutdownChan:
-			t.Fatalf("graceful shutdown should not have returned: %v", err)
-		case <-time.After(scaleDuration(10 * time.Millisecond)):
-		}
+		// the long request should have been terminated
+		if graceful {
+			select {
+			case err := <-longReqChan:
+				t.Fatalf("request should not have terminated: %v", err)
+			case err := <-shutdownChan:
+				t.Fatalf("graceful shutdown should not have returned: %v", err)
+			case <-time.After(scaleDuration(10 * time.Millisecond)):
+			}
 
-		close(handlerChan)
-		select {
-		case err := <-longReqChan:
-			require.NoError(t, err)
-		case <-time.After(time.Second):
-			t.Fatal("long request did not terminate")
-		}
+			close(handlerChan)
+			select {
+			case err := <-longReqChan:
+				require.NoError(t, err)
+			case <-time.After(time.Second):
+				t.Fatal("long request did not terminate")
+			}
 
-		select {
-		case err := <-shutdownChan:
-			require.NoError(t, err)
-		case <-time.After(time.Second):
-			t.Fatal("shutdown did not complete")
+			select {
+			case err := <-shutdownChan:
+				require.NoError(t, err)
+			case <-time.After(time.Second):
+				t.Fatal("shutdown did not complete")
+			}
 		}
 	}
 }

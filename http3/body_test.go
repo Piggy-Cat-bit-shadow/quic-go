@@ -71,13 +71,15 @@ func TestResponseBodyConcurrentClose(t *testing.T) {
 	reqDone := make(chan struct{})
 	rb := newResponseBody(&stream{Stream: str}, -1, reqDone)
 
-	for range 3 {
-		go rb.Close()
-	}
-	select {
-	case <-reqDone:
-	case <-time.After(time.Second):
-		t.Fatal("reqDone should be closed")
+	for i := 0; i < 3; i++ {
+		{
+			go rb.Close()
+		}
+		select {
+		case <-reqDone:
+		case <-time.After(time.Second):
+			t.Fatal("reqDone should be closed")
+		}
 	}
 }
 

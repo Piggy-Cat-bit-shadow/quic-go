@@ -385,7 +385,7 @@ func testClient1xxHandling(t *testing.T, numEarlyHints int, terminalStatus int, 
 	rw := newResponseWriter(newStream(rstr, nil, nil, func(r io.Reader, u uint64) error { return nil }), nil, false, nil)
 	rw.header.Add("Link", "foo")
 	rw.header.Add("Link", "bar")
-	for range numEarlyHints {
+	for i := 0; i < numEarlyHints; i++ {
 		rw.WriteHeader(http.StatusEarlyHints)
 	}
 	rw.WriteHeader(terminalStatus)

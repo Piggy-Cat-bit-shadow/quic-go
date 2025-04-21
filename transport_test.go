@@ -393,7 +393,7 @@ func TestTransportNonQUICPackets(t *testing.T) {
 	require.Equal(t, addr, conn.LocalAddr())
 
 	// now send a lot of packets without reading them
-	for i := range 2 * maxQueuedNonQUICPackets {
+	for i := 0; i < 2*maxQueuedNonQUICPackets; i++ {
 		data := append([]byte{0 /* don't set the QUIC bit */, uint8(i)}, bytes.Repeat([]byte{uint8(i)}, 1000)...)
 		_, err = conn.WriteTo(data, tr.Conn.LocalAddr())
 		require.NoError(t, err)

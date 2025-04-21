@@ -42,10 +42,10 @@ func TestDatagramReceiving(t *testing.T) {
 	}
 
 	// up to 32 datagrams can be queued
-	for i := range streamDatagramQueueLen + 1 {
+	for i := 0; i < streamDatagramQueueLen+1; i++ {
 		dg.enqueue([]byte{uint8(i)})
 	}
-	for i := range streamDatagramQueueLen {
+	for i := 0; i < streamDatagramQueueLen; i++ {
 		data, err := dg.Receive(context.Background())
 		require.NoError(t, err)
 		require.Equal(t, []byte{uint8(i)}, data)

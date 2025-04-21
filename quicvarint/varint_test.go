@@ -2,9 +2,9 @@ package quicvarint
 
 import (
 	"bytes"
+	rand "github.com/metacubex/randv2"
 	"golang.org/x/exp/constraints"
 	"io"
-	"math/rand/v2"
 	"testing"
 
 	"github.com/stretchr/testify/require"

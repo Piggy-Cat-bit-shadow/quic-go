@@ -3,7 +3,7 @@ package self_test
 import (
 	"bytes"
 	"context"
-	mrand "math/rand/v2"
+	mrand "github.com/metacubex/randv2"
 	"net"
 	"sync/atomic"
 	"testing"

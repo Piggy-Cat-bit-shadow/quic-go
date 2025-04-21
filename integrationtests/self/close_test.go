@@ -103,7 +103,7 @@ func TestDrainServerAcceptQueue(t *testing.T) {
 	time.Sleep(scaleDuration(25 * time.Millisecond)) // wait for connections to be queued
 
 	server.Close()
-	for i := range protocol.MaxAcceptQueueSize {
+	for i := 0; i < protocol.MaxAcceptQueueSize; i++ {
 		c, err := server.Accept(ctx)
 		require.NoError(t, err)
 		// make sure the connection is not closed

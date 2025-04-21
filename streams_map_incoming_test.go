@@ -206,7 +206,7 @@ func TestStreamsMapIncomingClosing(t *testing.T) {
 	var streams []*mockGenericStream
 	_, err := m.GetOrOpenStream(3)
 	require.NoError(t, err)
-	for range 3 {
+	for i := 0; i < 3; i++ {
 		str, err := m.AcceptStream(context.Background())
 		require.NoError(t, err)
 		streams = append(streams, str)
@@ -246,7 +246,7 @@ func TestStreamsMapIncomingRandomized(t *testing.T) {
 	)
 
 	ids := make([]protocol.StreamNum, num)
-	for i := range num {
+	for i := 0; i < num; i++ {
 		ids[i] = protocol.StreamNum(i + 1)
 	}
 	rand.Shuffle(len(ids), func(i, j int) { ids[i], ids[j] = ids[j], ids[i] })
@@ -256,7 +256,7 @@ func TestStreamsMapIncomingRandomized(t *testing.T) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		for range num {
+		for i := 0; i < num; i++ {
 			if _, err := m.AcceptStream(ctx); err != nil {
 				errChan1 <- err
 				return
@@ -267,7 +267,7 @@ func TestStreamsMapIncomingRandomized(t *testing.T) {
 
 	errChan2 := make(chan error, 1)
 	go func() {
-		for i := range num {
+		for i := 0; i < num; i++ {
 			_, err := m.GetOrOpenStream(ids[i])
 			if err != nil {
 				errChan2 <- err

@@ -2,7 +2,7 @@ package quic
 
 import (
 	"context"
-	"crypto/tls"
+	tls "github.com/metacubex/utls"
 	"net"
 	"runtime"
 	"testing"

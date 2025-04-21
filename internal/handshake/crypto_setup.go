@@ -2,9 +2,9 @@ package handshake
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
+	tls "github.com/metacubex/utls"
 	"net"
 	"strings"
 	"sync/atomic"

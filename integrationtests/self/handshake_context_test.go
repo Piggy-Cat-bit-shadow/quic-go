@@ -2,8 +2,8 @@ package self_test
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
+	tls "github.com/metacubex/utls"
 	"testing"
 	"time"
 

@@ -2,9 +2,9 @@ package http3
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
+	tls "github.com/metacubex/utls"
 	"io"
 	"log/slog"
 	"net"
@@ -590,7 +590,7 @@ func (s *Server) handleRequest(conn *connection, str quic.Stream, datagrams *dat
 		return
 	}
 
-	connState := conn.ConnectionState().TLS
+	connState := convertConnState(conn.ConnectionState().TLS)
 	req.TLS = &connState
 	req.RemoteAddr = conn.RemoteAddr().String()
 

@@ -1,7 +1,7 @@
 package testdata
 
 import (
-	"crypto/tls"
+	tls "github.com/metacubex/utls"
 	"io"
 	"testing"
 

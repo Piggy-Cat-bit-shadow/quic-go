@@ -1,7 +1,7 @@
 package http3
 
 import (
-	"crypto/tls"
+	tls "github.com/metacubex/utls"
 	"net"
 	"net/http/httptrace"
 	"net/textproto"
@@ -100,6 +100,6 @@ func traceTLSHandshakeStart(trace *httptrace.ClientTrace) {
 
 func traceTLSHandshakeDone(trace *httptrace.ClientTrace, state tls.ConnectionState, err error) {
 	if trace != nil && trace.TLSHandshakeDone != nil {
-		trace.TLSHandshakeDone(state, err)
+		trace.TLSHandshakeDone(convertConnState(state), err)
 	}
 }

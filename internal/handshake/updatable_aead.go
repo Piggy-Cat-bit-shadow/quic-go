@@ -3,9 +3,9 @@ package handshake
 import (
 	"crypto"
 	"crypto/cipher"
-	"crypto/tls"
 	"encoding/binary"
 	"fmt"
+	tls "github.com/metacubex/utls"
 	"time"
 
 	"github.com/quic-go/quic-go/internal/protocol"

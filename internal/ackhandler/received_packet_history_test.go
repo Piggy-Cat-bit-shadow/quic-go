@@ -1,8 +1,8 @@
 package ackhandler
 
 import (
+	"golang.org/x/exp/slices"
 	"math/rand/v2"
-	"slices"
 	"testing"
 
 	"github.com/quic-go/quic-go/internal/protocol"

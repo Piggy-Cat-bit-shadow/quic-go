@@ -114,6 +114,9 @@ func TestHTTPClientTrace(t *testing.T) {
 			state := e.Args.(map[string]any)["state"].(stdTls.ConnectionState)
 			require.Equal(t, 1, len(state.PeerCertificates))
 			require.Equal(t, "localhost", state.PeerCertificates[0].DNSNames[0])
+			data, err := state.ExportKeyingMaterial("test", []byte("test12"), 8)
+			require.NoError(t, err)
+			require.Equal(t, 8, len(data))
 		case "WroteHeaderField":
 			require.Equal(t, fmt.Sprintf("localhost:%d", port), e.Args.(string))
 		case "WroteRequest":

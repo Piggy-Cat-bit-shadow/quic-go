@@ -1,9 +1,10 @@
 package ackhandler
 
 import (
-	"math/rand/v2"
 	"slices"
 	"testing"
+
+	rand "github.com/metacubex/randv2"
 
 	"github.com/quic-go/quic-go/internal/protocol"
 

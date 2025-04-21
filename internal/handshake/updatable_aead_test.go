@@ -3,10 +3,11 @@ package handshake
 import (
 	"crypto/rand"
 	"fmt"
-	mrand "github.com/metacubex/randv2"
-	"github.com/metacubex/tls"
 	"testing"
 	"time"
+
+	mrand "github.com/metacubex/randv2"
+	"github.com/metacubex/tls"
 
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
@@ -394,7 +395,7 @@ func TestInitiateKeyUpdateAfterSendingMaxPackets(t *testing.T) {
 
 	var pn protocol.PacketNumber
 	// first key update
-	for range firstKeyUpdateInterval {
+	for i := 0; i < firstKeyUpdateInterval; i++ {
 		require.Equal(t, protocol.KeyPhaseZero, server.KeyPhase())
 		server.Seal(nil, []byte(msg), pn, []byte(ad))
 		pn++
@@ -408,7 +409,7 @@ func TestInitiateKeyUpdateAfterSendingMaxPackets(t *testing.T) {
 	eventRecorder.Clear()
 
 	// subsequent key update
-	for range 2 * keyUpdateInterval {
+	for i := 0; i < 2*keyUpdateInterval; i++ {
 		require.Equal(t, protocol.KeyPhaseOne, server.KeyPhase())
 		server.Seal(nil, []byte(msg), pn, []byte(ad))
 		pn++
@@ -441,7 +442,7 @@ func TestKeyUpdateEnforceACKKeyPhase(t *testing.T) {
 	server.SetHandshakeConfirmed()
 
 	// First make sure that we update our keys.
-	for i := range firstKeyUpdateInterval {
+	for i := 0; i < firstKeyUpdateInterval; i++ {
 		pn := protocol.PacketNumber(i)
 		require.Equal(t, protocol.KeyPhaseZero, server.KeyPhase())
 		server.Seal(nil, []byte(msg), pn, []byte(ad))
@@ -457,7 +458,7 @@ func TestKeyUpdateEnforceACKKeyPhase(t *testing.T) {
 	const nextPN = firstKeyUpdateInterval + 1
 	server.Seal(nil, []byte(msg), nextPN, []byte(ad))
 
-	for i := range firstKeyUpdateInterval {
+	for i := 0; i < firstKeyUpdateInterval; i++ {
 		// We haven't decrypted any packet in the new key phase yet.
 		// This means that the ACK must have been sent in the old key phase.
 		require.NoError(t, server.SetLargestAcked(protocol.PacketNumber(i)))
@@ -487,7 +488,7 @@ func TestKeyUpdateAfterOpeningMaxPackets(t *testing.T) {
 
 	// first key update
 	var pn protocol.PacketNumber
-	for range firstKeyUpdateInterval {
+	for i := 0; i < firstKeyUpdateInterval; i++ {
 		require.Equal(t, protocol.KeyPhaseZero, server.KeyPhase())
 		encrypted := client.Seal(nil, msg, pn, ad)
 		_, err := server.Open(nil, encrypted, monotime.Now(), pn, protocol.KeyPhaseZero, ad)
@@ -505,7 +506,7 @@ func TestKeyUpdateAfterOpeningMaxPackets(t *testing.T) {
 
 	// subsequent key update
 	client.rollKeys()
-	for range keyUpdateInterval {
+	for i := 0; i < keyUpdateInterval; i++ {
 		require.Equal(t, protocol.KeyPhaseOne, server.KeyPhase())
 		encrypted := client.Seal(nil, msg, pn, ad)
 		_, err := server.Open(nil, encrypted, monotime.Now(), pn, protocol.KeyPhaseOne, ad)
@@ -541,7 +542,7 @@ func TestKeyUpdateKeyPhaseSkipping(t *testing.T) {
 	data1 := client.Seal(nil, []byte(msg), 1, []byte(ad))
 	_, err := server.Open(nil, data1, now, 1, protocol.KeyPhaseZero, []byte(ad))
 	require.NoError(t, err)
-	for i := range firstKeyUpdateInterval {
+	for i := 0; i < firstKeyUpdateInterval; i++ {
 		pn := protocol.PacketNumber(i)
 		require.Equal(t, protocol.KeyPhaseZero, server.KeyPhase())
 		server.Seal(nil, []byte(msg), pn, []byte(ad))
@@ -571,7 +572,7 @@ func TestFastKeyUpdatesByPeer(t *testing.T) {
 	server.SetHandshakeConfirmed()
 
 	var pn protocol.PacketNumber
-	for range firstKeyUpdateInterval {
+	for i := 0; i < firstKeyUpdateInterval; i++ {
 		require.Equal(t, protocol.KeyPhaseZero, server.KeyPhase())
 		server.Seal(nil, []byte(msg), pn, []byte(ad))
 		pn++
@@ -624,7 +625,7 @@ func TestFastKeyUpdateByUs(t *testing.T) {
 	server.SetHandshakeConfirmed()
 
 	// send so many packets that we initiate the first key update
-	for i := range firstKeyUpdateInterval {
+	for i := 0; i < firstKeyUpdateInterval; i++ {
 		pn := protocol.PacketNumber(i)
 		require.Equal(t, protocol.KeyPhaseZero, server.KeyPhase())
 		server.Seal(nil, []byte(msg), pn, []byte(ad))

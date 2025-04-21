@@ -5,12 +5,13 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
-	"github.com/metacubex/http"
-	"github.com/metacubex/http/httptest"
-	mrand "github.com/metacubex/randv2"
 	"io"
 	"testing"
 	"time"
+
+	"github.com/metacubex/http"
+	"github.com/metacubex/http/httptest"
+	mrand "github.com/metacubex/randv2"
 
 	"github.com/metacubex/qpack"
 	"github.com/quic-go/quic-go"
@@ -192,7 +193,7 @@ func TestClientRequestError(t *testing.T) {
 
 	req, err := http.NewRequest(http.MethodGet, "http://quic-go.net", nil)
 	require.NoError(t, err)
-	for range 1000 {
+	for i := 0; i < 1000; i++ {
 		req.Header.Add(randomString(50), randomString(50))
 	}
 
@@ -406,7 +407,7 @@ func testClient1xxHandling(t *testing.T, numEarlyHints int, terminalStatus int, 
 	rw := newResponseWriter(newStream(rstr, nil, nil, func(io.Reader, *headersFrame) error { return nil }, nil), nil, false, nil)
 	rw.header.Add("Link", "foo")
 	rw.header.Add("Link", "bar")
-	for range numEarlyHints {
+	for i := 0; i < numEarlyHints; i++ {
 		rw.WriteHeader(http.StatusEarlyHints)
 	}
 	rw.WriteHeader(terminalStatus)

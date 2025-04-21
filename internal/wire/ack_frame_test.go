@@ -409,7 +409,7 @@ func TestACKTooManyRanges(t *testing.T) {
 	var ack AckFrame
 	numRanges := protocol.MaxNumAckRanges + 10
 	ack.AckRanges = make([]AckRange, numRanges)
-	for i := range numRanges {
+	for i := 0; i < numRanges; i++ {
 		ack.AckRanges[numRanges-i-1] = AckRange{Smallest: protocol.PacketNumber(2 * i), Largest: protocol.PacketNumber(2 * i)}
 	}
 	require.True(t, ack.validateAckRanges())

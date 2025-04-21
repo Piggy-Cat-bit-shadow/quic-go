@@ -53,7 +53,7 @@ func TestWritingStopping(t *testing.T) {
 	writer := fileSeq.AddProducer()
 	go fileSeq.Run()
 
-	for i := range 1000 {
+	for i := 0; i < 1000; i++ {
 		writer.RecordEvent(testEvent{message: fmt.Sprintf("test message %d", i)})
 	}
 

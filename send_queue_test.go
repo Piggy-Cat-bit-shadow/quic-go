@@ -83,7 +83,7 @@ func TestSendQueueBlocking(t *testing.T) {
 		}()
 
 		// +1, since one packet will be queued in the Write call
-		for i := range sendQueueCapacity + 1 {
+		for i := 0; i < sendQueueCapacity+1; i++ {
 			require.False(t, q.WouldBlock())
 			q.Send(getPacketWithContents([]byte("foobar")), 10, protocol.ECT1)
 			// make sure that the first packet is actually enqueued in the Write call
@@ -132,7 +132,7 @@ func TestSendQueueBlocking(t *testing.T) {
 		default:
 		}
 
-		for range sendQueueCapacity {
+		for j := 0; j < sendQueueCapacity; j++ {
 			blockWrite <- struct{}{}
 		}
 		synctest.Wait()
@@ -175,7 +175,7 @@ func TestSendQueueWriteError(t *testing.T) {
 		sent := make(chan struct{})
 		go func() {
 			defer close(sent)
-			for range 2 * sendQueueCapacity {
+			for j := 0; j < 2*sendQueueCapacity; j++ {
 				q.Send(getPacketWithContents([]byte("raboof")), 6, protocol.ECNNon)
 			}
 		}()

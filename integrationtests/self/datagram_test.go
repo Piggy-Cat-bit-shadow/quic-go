@@ -3,11 +3,12 @@ package self_test
 import (
 	"bytes"
 	"context"
-	mrand "math/rand/v2"
 	"net"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	mrand "github.com/metacubex/randv2"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/internal/synctest"
@@ -205,7 +206,7 @@ func TestDatagramLoss(t *testing.T) {
 			}
 		}()
 
-		for i := range numDatagrams {
+		for i := 0; i < numDatagrams; i++ {
 			payload := bytes.Repeat([]byte{uint8(i)}, datagramSize)
 			require.NoError(t, clientConn.SendDatagram(payload))
 			require.NoError(t, serverConn.SendDatagram(payload))

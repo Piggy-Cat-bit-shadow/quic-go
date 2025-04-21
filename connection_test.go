@@ -6,12 +6,13 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"github.com/metacubex/tls"
 	"net"
 	"net/netip"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/metacubex/tls"
 
 	"github.com/quic-go/quic-go/internal/ackhandler"
 	"github.com/quic-go/quic-go/internal/flowcontrol"
@@ -883,7 +884,7 @@ func TestConnectionMaxUnprocessedPackets(t *testing.T) {
 		var eventRecorder events.Recorder
 		tc := newServerTestConnection(t, mockCtrl, nil, false, connectionOptTracer(&eventRecorder))
 
-		for range protocol.MaxConnUnprocessedPackets {
+		for i := 0; i < protocol.MaxConnUnprocessedPackets; i++ {
 			// nothing here should block
 			tc.conn.handlePacket(receivedPacket{data: []byte("foobar")})
 		}
@@ -1576,7 +1577,7 @@ func testConnectionReceivePrioritization(t *testing.T, handshakeComplete bool, n
 		).AnyTimes()
 	}
 
-	for i := range numPackets {
+	for i := 0; i < numPackets; i++ {
 		tc.conn.handlePacket(getShortHeaderPacket(t, tc.remoteAddr, tc.srcConnID, protocol.PacketNumber(i), []byte("foobar")))
 	}
 
@@ -1825,7 +1826,7 @@ func TestConnectionPacketPacing(t *testing.T) {
 			sph.EXPECT().SentPacket(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()),
 		)
 		sph.EXPECT().ECNMode(gomock.Any()).AnyTimes()
-		for i := range 3 {
+		for i := 0; i < 3; i++ {
 			tc.packer.EXPECT().AppendPacket(gomock.Any(), gomock.Any(), gomock.Any(), Version1).DoAndReturn(
 				func(buf *packetBuffer, _ protocol.ByteCount, _ monotime.Time, _ protocol.Version) (shortHeaderPacket, error) {
 					buf.Data = append(buf.Data, []byte("packet"+strconv.Itoa(i+1))...)
@@ -1858,7 +1859,7 @@ func TestConnectionPacketPacing(t *testing.T) {
 		synctest.Wait()
 
 		var times []monotime.Time
-		for i := range 3 {
+		for i := 0; i < 3; i++ {
 			select {
 			case b := <-sendChan:
 				require.Equal(t, []byte("packet"+strconv.Itoa(i+1)), b.data)
@@ -2131,7 +2132,7 @@ func TestConnectionACKTimer(t *testing.T) {
 		done := make(chan struct{}, 5)
 		var calls []any
 
-		for range 2 {
+		for i := 0; i < 2; i++ {
 			calls = append(calls, tc.packer.EXPECT().AppendPacket(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
 				func(buf *packetBuffer, _ protocol.ByteCount, _ monotime.Time, _ protocol.Version) (shortHeaderPacket, error) {
 					buf.Data = append(buf.Data, []byte("foobar")...)
@@ -2163,7 +2164,7 @@ func TestConnectionACKTimer(t *testing.T) {
 		go func() { errChan <- tc.conn.run() }()
 		tc.conn.scheduleSending()
 
-		for range 2 {
+		for i := 0; i < 2; i++ {
 			synctest.Wait()
 
 			select {
@@ -2212,7 +2213,7 @@ func TestConnectionGSOBatch(t *testing.T) {
 
 		maxPacketSize := tc.conn.maxPacketSize()
 		var expectedData []byte
-		for i := range 4 {
+		for i := 0; i < 4; i++ {
 			data := bytes.Repeat([]byte{byte(i)}, int(maxPacketSize))
 			expectedData = append(expectedData, data...)
 
@@ -2279,7 +2280,7 @@ func TestConnectionGSOBatchPacketSize(t *testing.T) {
 		maxPacketSize := tc.conn.maxPacketSize()
 		var expectedData []byte
 		var calls []any
-		for i := range 4 {
+		for i := 0; i < 4; i++ {
 			var data []byte
 			if i == 3 {
 				data = bytes.Repeat([]byte{byte(i)}, int(maxPacketSize-1))
@@ -2368,7 +2369,7 @@ func TestConnectionGSOBatchECN(t *testing.T) {
 		var expectedData []byte
 		var calls []any
 		maxPacketSize := tc.conn.maxPacketSize()
-		for i := range 3 {
+		for i := 0; i < 3; i++ {
 			data := bytes.Repeat([]byte{byte(i)}, int(maxPacketSize))
 			expectedData = append(expectedData, data...)
 
@@ -2528,7 +2529,7 @@ func TestConnectionCongestionControl(t *testing.T) {
 		sph.EXPECT().SendMode(gomock.Any()).Return(ackhandler.SendAck).MaxTimes(1)
 		sph.EXPECT().SentPacket(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(2)
 		// Since we're already sending out packets, we don't expect any calls to PackAckOnlyPacket
-		for i := range 2 {
+		for i := 0; i < 2; i++ {
 			tc.packer.EXPECT().AppendPacket(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
 				func(buffer *packetBuffer, count protocol.ByteCount, t monotime.Time, version protocol.Version) (shortHeaderPacket, error) {
 					buffer.Data = append(buffer.Data, []byte("foobar")...)

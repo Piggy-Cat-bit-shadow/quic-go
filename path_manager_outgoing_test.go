@@ -151,7 +151,7 @@ func TestPathManagerOutgoingRetransmissions(t *testing.T) {
 		took time.Duration
 	}
 	var results []result
-	for range 4 {
+	for i := 0; i < 4; i++ {
 		select {
 		case err := <-errChan:
 			require.NoError(t, err)
@@ -193,7 +193,7 @@ func TestPathManagerOutgoingRetransmissions(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { errChan <- p.Probe(ctx) }()
 
-	for range 2 {
+	for i := 0; i < 2; i++ {
 		select {
 		case err := <-errChan:
 			require.NoError(t, err)

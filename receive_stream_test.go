@@ -617,14 +617,14 @@ func TestReceiveStreamConcurrentReads(t *testing.T) {
 
 	const num = 3
 	errChan := make(chan error, num)
-	for range num {
+	for i := 0; i < num; i++ {
 		go func() {
 			_, err := str.Read(make([]byte, 8))
 			errChan <- err
 		}()
 	}
 	require.NoError(t, str.handleStreamFrame(&wire.StreamFrame{Data: []byte("foobar"), Fin: true}, time.Now()))
-	for range num {
+	for i := 0; i < num; i++ {
 		select {
 		case err := <-errChan:
 			require.ErrorIs(t, err, io.EOF)

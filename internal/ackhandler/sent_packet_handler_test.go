@@ -117,7 +117,7 @@ func testSentPacketHandlerSendAndAcknowledge(t *testing.T, encLevel protocol.Enc
 	var packets packetTracker
 	var pns []protocol.PacketNumber
 	now := time.Now()
-	for i := range 10 {
+	for i := 0; i < 10; i++ {
 		e := encLevel
 		// also send some 0-RTT packets to make sure they're acknowledged in the same packet number space
 		if encLevel == protocol.Encryption1RTT && i < 5 {
@@ -487,7 +487,7 @@ func TestSentPacketHandlerPacketBasedLossDetection(t *testing.T) {
 	var packets packetTracker
 	now := time.Now()
 	var pns []protocol.PacketNumber
-	for range 5 {
+	for i := 0; i < 5; i++ {
 		pn := sph.PopPacketNumber(protocol.EncryptionInitial)
 		sph.SentPacket(now, pn, protocol.InvalidPacketNumber, nil, []Frame{packets.NewPingFrame(pn)}, protocol.EncryptionInitial, protocol.ECNNon, 1000, false, false)
 		pns = append(pns, pn)
@@ -574,7 +574,7 @@ func testSentPacketHandlerPTO(t *testing.T, encLevel protocol.EncryptionLevel, p
 	}
 	var pns []protocol.PacketNumber
 	// send packet 0, 1, 2, 3
-	for i := range 3 {
+	for i := 0; i < 3; i++ {
 		pns = append(pns, sendPacket(sendTimes[i], true))
 	}
 	pns = append(pns, sendPacket(sendTimes[3], false))
@@ -834,7 +834,7 @@ func TestSentPacketHandlerCongestion(t *testing.T) {
 	var bytesInFlight protocol.ByteCount
 	var pns []protocol.PacketNumber
 	var sendTimes []time.Time
-	for i := range 5 {
+	for i := 0; i < 5; i++ {
 		gomock.InOrder(
 			cong.EXPECT().CanSend(bytesInFlight).Return(true),
 			cong.EXPECT().HasPacingBudget(now).Return(true),
@@ -929,7 +929,7 @@ func testSentPacketHandlerRetry(t *testing.T, rtt, expectedRTT time.Duration) {
 	now := start
 	var initialPNs, appDataPNs []protocol.PacketNumber
 	// send 2 initial and 2 0-RTT packets
-	for range 2 {
+	for i := 0; i < 2; i++ {
 		pn := sph.PopPacketNumber(protocol.EncryptionInitial)
 		initialPNs = append(initialPNs, pn)
 		sph.SentPacket(now, pn, protocol.InvalidPacketNumber, nil, []Frame{initialPackets.NewPingFrame(pn)}, protocol.EncryptionInitial, protocol.ECNNon, 1000, false, false)
@@ -1239,7 +1239,7 @@ func TestSentPacketHandlerPathProbeAckAndLoss(t *testing.T) {
 // We test it with a randomized approach, to make sure that it doesn't panic under any circumstances.
 func TestSentPacketHandlerRandomized(t *testing.T) {
 	seed := uint64(time.Now().UnixNano())
-	for i := range 5 {
+	for i := 0; i < 5; i++ {
 		t.Run(fmt.Sprintf("run %d (seed %d)", i+1, seed), func(t *testing.T) {
 			testSentPacketHandlerRandomized(t, seed)
 		})
@@ -1284,7 +1284,7 @@ func testSentPacketHandlerRandomized(t *testing.T, seed uint64) {
 	now := time.Now()
 	start := now
 	var pns []protocol.PacketNumber
-	for range 4 {
+	for i := 0; i < 4; i++ {
 		isProbe := r.Int()%2 == 0
 		pn := sendPacket(now, isProbe)
 		t.Logf("t=%dms: sending packet %d (probe packet: %t)", now.Sub(start).Milliseconds(), pn, isProbe)
@@ -1301,7 +1301,7 @@ func testSentPacketHandlerRandomized(t *testing.T, seed uint64) {
 			var ackPns []protocol.PacketNumber
 			if len(pns) > 0 {
 				numToAck := utils.Min(1+r.IntN(2), len(pns))
-				for range numToAck {
+				for i := 0; i < numToAck; i++ {
 					ackPns = append(ackPns, pns[r.IntN(len(pns))])
 				}
 			}

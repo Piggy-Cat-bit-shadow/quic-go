@@ -739,7 +739,7 @@ func testServerCreateConnection(t *testing.T, useRetry bool) {
 		assert.Zero(t, args.retrySrcConnID)
 	}
 
-	for range 3 {
+	for i := 0; i < 3; i++ {
 		select {
 		case <-done:
 		case <-time.After(time.Second):
@@ -752,7 +752,7 @@ func TestServerClose(t *testing.T) {
 	var hooks []*connTestHooks
 	const numConns = 3
 	done := make(chan struct{}, numConns)
-	for range numConns {
+	for i := 0; i < numConns; i++ {
 		hooks = append(hooks, &connTestHooks{
 			closeWithTransportError: func(TransportErrorCode) { done <- struct{}{} },
 		})
@@ -760,7 +760,7 @@ func TestServerClose(t *testing.T) {
 	recorder := newConnConstructorRecorder(hooks...)
 	server := newTestServer(t, &serverOpts{newConn: recorder.NewConn})
 
-	for range numConns {
+	for i := 0; i < numConns; i++ {
 		b := make([]byte, 10)
 		rand.Read(b)
 		connID := protocol.ParseConnectionID(b)
@@ -778,7 +778,7 @@ func TestServerClose(t *testing.T) {
 
 	server.Close()
 	// closing closes all handshaking connections with CONNECTION_REFUSED
-	for range numConns {
+	for i := 0; i < numConns; i++ {
 		select {
 		case <-done:
 		case <-time.After(time.Second):
@@ -787,7 +787,7 @@ func TestServerClose(t *testing.T) {
 	}
 
 	// Accept returns ErrServerClosed after closing
-	for range 5 {
+	for i := 0; i < 5; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		_, err := server.Accept(ctx)
@@ -891,7 +891,7 @@ func TestServerReceiveQueue(t *testing.T) {
 	})
 
 	conn := newUDPConnLocalhost(t)
-	for i := range protocol.MaxServerUnprocessedPackets + 1 {
+	for i := 0; i < protocol.MaxServerUnprocessedPackets+1; i++ {
 		server.handlePacket(getValidInitialPacket(t, conn.LocalAddr(), randConnID(6), randConnID(8)))
 		// newConn blocks on the acceptConn channel, so this blocks the server's run loop
 		if i == 0 {
@@ -1010,7 +1010,7 @@ func TestServerAcceptHandshakeFailure(t *testing.T) {
 func TestServerAcceptQueue(t *testing.T) {
 	var conns []*connTestHooks
 	rejectedCloseError := make(chan TransportErrorCode, 1)
-	for i := range protocol.MaxAcceptQueueSize + 2 {
+	for i := 0; i < protocol.MaxAcceptQueueSize+2; i++ {
 		conn := &connTestHooks{
 			handshakeComplete: func() <-chan struct{} {
 				c := make(chan struct{})
@@ -1027,7 +1027,7 @@ func TestServerAcceptQueue(t *testing.T) {
 	recorder := newConnConstructorRecorder(conns...)
 	server := newTestServer(t, &serverOpts{newConn: recorder.NewConn})
 
-	for range protocol.MaxAcceptQueueSize {
+	for i := 0; i < protocol.MaxAcceptQueueSize; i++ {
 		b := make([]byte, 16)
 		rand.Read(b)
 		connID := protocol.ParseConnectionID(b)
@@ -1101,7 +1101,7 @@ func TestServer0RTTReordering(t *testing.T) {
 
 	var zeroRTTPackets []receivedPacket
 
-	for range protocol.Max0RTTQueueLen {
+	for i := 0; i < protocol.Max0RTTQueueLen; i++ {
 		p := getLongHeaderPacket(t,
 			&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 42},
 			&wire.ExtendedHeader{
@@ -1142,7 +1142,7 @@ func TestServer0RTTReordering(t *testing.T) {
 	initial := getValidInitialPacket(t, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 42}, randConnID(5), connID)
 	server.handlePacket(initial)
 
-	for i := range protocol.Max0RTTQueueLen + 1 {
+	for i := 0; i < protocol.Max0RTTQueueLen+1; i++ {
 		select {
 		case p := <-packets:
 			if i == 0 {
@@ -1173,7 +1173,7 @@ func TestServer0RTTQueueing(t *testing.T) {
 	firstRcvTime := time.Now()
 	otherRcvTime := firstRcvTime.Add(protocol.Max0RTTQueueingDuration / 2)
 	var sizes []protocol.ByteCount
-	for i := range protocol.Max0RTTQueues {
+	for i := 0; i < protocol.Max0RTTQueues; i++ {
 		b := make([]byte, 16)
 		rand.Read(b)
 		connID := protocol.ParseConnectionID(b)
@@ -1282,7 +1282,7 @@ func TestServer0RTTQueueing(t *testing.T) {
 	}
 	server.handlePacket(triggerPacket)
 
-	for range protocol.Max0RTTQueues - 1 {
+	for i := 0; i < protocol.Max0RTTQueues-1; i++ {
 		select {
 		case <-dropped:
 		case <-time.After(time.Second):

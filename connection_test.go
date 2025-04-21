@@ -1398,7 +1398,7 @@ func testConnectionReceivePrioritization(t *testing.T, handshakeComplete bool, n
 		).AnyTimes()
 	}
 
-	for i := range numPackets {
+	for i := 0; i < numPackets; i++ {
 		tc.conn.handlePacket(getShortHeaderPacket(t, tc.remoteAddr, tc.srcConnID, protocol.PacketNumber(i), []byte("foobar")))
 	}
 

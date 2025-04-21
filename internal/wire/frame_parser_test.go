@@ -59,7 +59,7 @@ func TestFrameParsingHandlesPaddingAtEnd(t *testing.T) {
 func TestFrameParsingParsesSingleFrame(t *testing.T) {
 	parser := NewFrameParser(true, true)
 	var b []byte
-	for range 10 {
+	for i := 0; i < 10; i++ {
 		var err error
 		b, err = (&PingFrame{}).Append(b, protocol.Version1)
 		require.NoError(t, err)
@@ -680,7 +680,7 @@ func parseFrames(tb testing.TB, parser *FrameParser, data []byte, frames ...Fram
 func TestFrameParserAllocs(t *testing.T) {
 	t.Run("STREAM", func(t *testing.T) {
 		var frames []Frame
-		for i := range 10 {
+		for i := 0; i < 10; i++ {
 			frames = append(frames, &StreamFrame{
 				StreamID:       protocol.StreamID(1337 + i),
 				Offset:         protocol.ByteCount(1e7 + i),
@@ -693,7 +693,7 @@ func TestFrameParserAllocs(t *testing.T) {
 
 	t.Run("ACK", func(t *testing.T) {
 		var frames []Frame
-		for i := range 10 {
+		for i := 0; i < 10; i++ {
 			frames = append(frames, &AckFrame{
 				AckRanges: []AckRange{
 					{Smallest: protocol.PacketNumber(5000 + i), Largest: protocol.PacketNumber(5200 + i)},
@@ -733,7 +733,7 @@ func BenchmarkParseOtherFrames(b *testing.B) {
 
 func BenchmarkParseAckFrame(b *testing.B) {
 	var frames []Frame
-	for i := range 10 {
+	for i := 0; i < 10; i++ {
 		frames = append(frames, &AckFrame{
 			AckRanges: []AckRange{
 				{Smallest: protocol.PacketNumber(5000 + i), Largest: protocol.PacketNumber(5200 + i)},
@@ -750,7 +750,7 @@ func BenchmarkParseAckFrame(b *testing.B) {
 
 func BenchmarkParseStreamFrame(b *testing.B) {
 	var frames []Frame
-	for i := range 10 {
+	for i := 0; i < 10; i++ {
 		data := make([]byte, 200+i)
 		rand.Read(data)
 		frames = append(frames, &StreamFrame{
@@ -765,7 +765,7 @@ func BenchmarkParseStreamFrame(b *testing.B) {
 
 func BenchmarkParseDatagramFrame(b *testing.B) {
 	var frames []Frame
-	for i := range 10 {
+	for i := 0; i < 10; i++ {
 		data := make([]byte, 200+i)
 		rand.Read(data)
 		frames = append(frames, &DatagramFrame{
@@ -785,7 +785,7 @@ func benchmarkFrames(b *testing.B, frames ...Frame) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for range b.N {
+	for i := 0; i < b.N; i++ {
 		parseFrames(b, parser, buf, frames...)
 	}
 }

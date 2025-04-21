@@ -217,7 +217,7 @@ func randomValues(num int, maxValue uint64) []benchmarkValue {
 	r := rand.New(rand.NewPCG(13, 37))
 
 	bv := make([]benchmarkValue, num)
-	for i := range num {
+	for i := 0; i < num; i++ {
 		v := r.Uint64() % maxValue
 		bv[i].v = v
 		bv[i].b = Append([]byte{}, v)

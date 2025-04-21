@@ -46,7 +46,7 @@ func getRandomNumberLowerOrEqual(target uint64) uint64 {
 func getAckRanges(num int) []wire.AckRange {
 	prevSmallest := mrand.Uint64N(4611686018427387904)
 	ranges := make([]wire.AckRange, 0, num)
-	for range num {
+	for i := 0; i < num; i++ {
 		if prevSmallest <= 2 {
 			break
 		}
@@ -261,11 +261,11 @@ func main() {
 		}
 	}
 
-	for range 30 {
+	for i := 0; i < 30; i++ {
 		frames := getFrames()
 
 		var b []byte
-		for range mrand.IntN(30) + 2 {
+		for i := 0; i < mrand.IntN(30)+2; i++ {
 			if mrand.IntN(10) == 0 { // write a PADDING frame
 				b = append(b, 0)
 			}

@@ -6,7 +6,7 @@ import (
 	tls "github.com/metacubex/utls"
 	"net"
 
-	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/metacubex/quic-go/internal/protocol"
 )
 
 // make it possible to mock connection ID for initial generation in the tests

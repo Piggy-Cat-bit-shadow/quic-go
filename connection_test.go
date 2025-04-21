@@ -1693,6 +1693,7 @@ func TestConnectionPacketPacing(t *testing.T) {
 	)
 	sph.EXPECT().ECNMode(gomock.Any()).AnyTimes()
 	for i := 0; i < 3; i++ {
+		i := i
 		tc.packer.EXPECT().AppendPacket(gomock.Any(), gomock.Any(), gomock.Any(), Version1).DoAndReturn(
 			func(buf *packetBuffer, _ protocol.ByteCount, _ time.Time, _ protocol.Version) (shortHeaderPacket, error) {
 				buf.Data = append(buf.Data, []byte("packet"+strconv.Itoa(i+1))...)
@@ -2200,6 +2201,7 @@ func TestConnectionGSOBatchECN(t *testing.T) {
 	var calls []any
 	maxPacketSize := tc.conn.maxPacketSize()
 	for i := 0; i < 3; i++ {
+		i := i
 		data := bytes.Repeat([]byte{byte(i)}, int(maxPacketSize))
 		expectedData = append(expectedData, data...)
 

@@ -7,11 +7,11 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	mrand "github.com/metacubex/randv2"
 	tls "github.com/metacubex/utls"
 	"io"
 	"log"
 	"math"
-	mrand "math/rand/v2"
 	"net"
 	"time"
 

@@ -3,7 +3,7 @@ package ackhandler
 import (
 	"fmt"
 	"iter"
-	"slices"
+	"golang.org/x/exp/slices"
 
 	"github.com/quic-go/quic-go/internal/protocol"
 )

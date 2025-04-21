@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	tls "github.com/metacubex/utls"
+	"golang.org/x/exp/slices"
 	"net"
-	"slices"
 	"time"
 
 	"github.com/quic-go/quic-go/internal/handshake"

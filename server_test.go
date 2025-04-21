@@ -5,8 +5,8 @@ import (
 	"crypto/rand"
 	"errors"
 	tls "github.com/metacubex/utls"
+	"golang.org/x/exp/slices"
 	"net"
-	"slices"
 	"testing"
 	"time"
 

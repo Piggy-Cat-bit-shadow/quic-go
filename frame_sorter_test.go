@@ -3,8 +3,8 @@ package quic
 import (
 	rand "crypto/rand"
 	"fmt"
+	mrand "github.com/metacubex/randv2"
 	"math"
-	mrand "math/rand/v2"
 	"testing"
 
 	"github.com/quic-go/quic-go/internal/protocol"

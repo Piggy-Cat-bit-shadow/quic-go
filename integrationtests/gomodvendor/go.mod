@@ -11,6 +11,7 @@ require (
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/cloudflare/circl v1.3.7 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
+	github.com/metacubex/randv2 v0.2.0 // indirect
 	github.com/metacubex/utls v1.7.3 // indirect
 	github.com/quic-go/qpack v0.5.1 // indirect
 	go.uber.org/mock v0.5.0 // indirect

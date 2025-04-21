@@ -42,7 +42,7 @@ func TestFrameParsingHandlesPaddingAtEnd(t *testing.T) {
 func TestFrameParsingParsesSingleFrame(t *testing.T) {
 	parser := NewFrameParser(true, true)
 	var b []byte
-	for range 10 {
+	for i := 0; i < 10; i++ {
 		var err error
 		b, err = (&PingFrame{}).Append(b, protocol.Version1)
 		require.NoError(t, err)

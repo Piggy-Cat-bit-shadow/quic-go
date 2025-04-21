@@ -93,7 +93,7 @@ func TestCryptoStreamWrite(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, str.HasData())
 
-	for i := range expectedCryptoFrameLen(0) {
+	for i := protocol.ByteCount(0); i < expectedCryptoFrameLen(0); i++ {
 		require.Nil(t, str.PopCryptoFrame(i))
 	}
 

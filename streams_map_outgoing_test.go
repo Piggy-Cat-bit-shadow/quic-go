@@ -159,7 +159,7 @@ func TestStreamsMapOutgoingConcurrentOpenStreamSync(t *testing.T) {
 		err    error
 	}
 	results := make(chan result, 3)
-	for i := range 3 {
+	for i := 0; i < 3; i++ {
 		go func(i int) {
 			str, err := m.OpenStreamSync(context.Background())
 			results <- result{index: i, stream: str, err: err}
@@ -169,7 +169,7 @@ func TestStreamsMapOutgoingConcurrentOpenStreamSync(t *testing.T) {
 
 	m.SetMaxStream(protocol.FirstOutgoingUniStreamClient + 4)
 	received := make(map[protocol.StreamID]struct{})
-	for range 2 {
+	for i := 0; i < 2; i++ {
 		select {
 		case res := <-results:
 			require.NoError(t, res.err)
@@ -243,7 +243,7 @@ func TestStreamsMapOutgoingBlockedFrames(t *testing.T) {
 	)
 
 	m.SetMaxStream(protocol.FirstOutgoingBidiStreamClient + 8)
-	for range 3 {
+	for i := 0; i < 3; i++ {
 		_, err := m.OpenStream()
 		require.NoError(t, err)
 	}
@@ -257,14 +257,14 @@ func TestStreamsMapOutgoingBlockedFrames(t *testing.T) {
 	frameQueue = frameQueue[:0]
 
 	// only a single STREAMS_BLOCKED frame is queued per offset
-	for range 5 {
+	for i := 0; i < 5; i++ {
 		_, err = m.OpenStream()
 		require.ErrorIs(t, err, &StreamLimitReachedError{})
 		require.Empty(t, frameQueue)
 	}
 
 	errChan := make(chan error, 3)
-	for range 3 {
+	for i := 0; i < 3; i++ {
 		go func() {
 			_, err := m.OpenStreamSync(context.Background())
 			errChan <- err
@@ -274,7 +274,7 @@ func TestStreamsMapOutgoingBlockedFrames(t *testing.T) {
 
 	// allow 2 more streams
 	m.SetMaxStream(protocol.FirstOutgoingBidiStreamClient + 16)
-	for range 2 {
+	for i := 0; i < 2; i++ {
 		select {
 		case err := <-errChan:
 			require.NoError(t, err)
@@ -320,7 +320,7 @@ func TestStreamsMapOutgoingRandomizedOpenStreamSync(t *testing.T) {
 		err error
 	}
 	resultChan := make(chan result, n)
-	for range n {
+	for i := 0; i < n; i++ {
 		go func() {
 			str, err := m.OpenStreamSync(context.Background())
 			resultChan <- result{id: str.id, err: err}
@@ -485,7 +485,7 @@ func TestStreamsMapOutgoingRandomizedWithCancellation(t *testing.T) {
 }
 
 func TestStreamsMapConcurrent(t *testing.T) {
-	for i := range 5 {
+	for i := 0; i < 5; i++ {
 		t.Run(fmt.Sprintf("iteration %d", i+1), func(t *testing.T) {
 			testStreamsMapConcurrent(t)
 		})
@@ -505,7 +505,7 @@ func testStreamsMapConcurrent(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	errChan := make(chan error, num)
-	for range num {
+	for i := 0; i < num; i++ {
 		go func() {
 			_, err := m.OpenStreamSync(ctx)
 			errChan <- err
@@ -517,7 +517,7 @@ func testStreamsMapConcurrent(t *testing.T) {
 	go cancel()
 	go m.SetMaxStream(protocol.FirstOutgoingBidiStreamClient + 4*num/2)
 
-	for range num {
+	for i := 0; i < num; i++ {
 		select {
 		case err := <-errChan:
 			if err != nil {

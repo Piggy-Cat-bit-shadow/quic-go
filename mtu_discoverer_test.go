@@ -75,7 +75,7 @@ func TestMTUDiscovererAckAndLoss(t *testing.T) {
 }
 
 func TestMTUDiscovererMTUDiscovery(t *testing.T) {
-	for i := range 5 {
+	for i := 0; i < 5; i++ {
 		t.Run(fmt.Sprintf("test %d", i), func(t *testing.T) {
 			testMTUDiscovererMTUDiscovery(t)
 		})
@@ -130,7 +130,7 @@ func testMTUDiscovererMTUDiscovery(t *testing.T) {
 }
 
 func TestMTUDiscovererWithRandomLoss(t *testing.T) {
-	for i := range 5 {
+	for i := 0; i < 5; i++ {
 		t.Run(fmt.Sprintf("test %d", i), func(t *testing.T) {
 			testMTUDiscovererWithRandomLoss(t)
 		})

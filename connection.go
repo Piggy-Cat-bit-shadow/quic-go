@@ -1073,6 +1073,11 @@ func (s *connection) handleShortHeaderPacket(p receivedPacket, isCoalesced bool)
 	if addrsEqual(p.remoteAddr, s.RemoteAddr()) {
 		return true, nil
 	}
+	if s.config.DisablePathManager {
+		// for hysteria2 port hopping, direct change remote address without connection migration logic
+		s.conn.ChangeRemoteAddr(p.remoteAddr, p.info)
+		return true, nil
+	}
 
 	var shouldSwitchPath bool
 	if s.pathManager == nil {
@@ -1099,6 +1104,7 @@ func (s *connection) handleShortHeaderPacket(p receivedPacket, isCoalesced bool)
 		return true, nil
 	}
 	s.pathManager.SwitchToPath(p.remoteAddr)
+
 	s.sentPacketHandler.MigratedPath(p.rcvTime, protocol.ByteCount(s.config.InitialPacketSize))
 	maxPacketSize := protocol.ByteCount(protocol.MaxPacketBufferSize)
 	if s.peerParams.MaxUDPPayloadSize > 0 && s.peerParams.MaxUDPPayloadSize < maxPacketSize {

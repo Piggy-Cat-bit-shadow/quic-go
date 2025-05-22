@@ -2,7 +2,7 @@ package handshake
 
 import (
 	"crypto"
-	"crypto/tls"
+	tls "github.com/metacubex/utls"
 
 	"golang.org/x/crypto/hkdf"
 

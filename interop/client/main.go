@@ -1,10 +1,10 @@
 package main
 
 import (
-	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
+	tls "github.com/metacubex/utls"
 	"io"
 	"log"
 	"net/http"

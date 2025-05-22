@@ -3,9 +3,9 @@ package http3
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
+	tls "github.com/metacubex/utls"
 	"io"
 	"net/http"
 	"net/http/httptest"

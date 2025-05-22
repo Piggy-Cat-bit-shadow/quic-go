@@ -1,8 +1,8 @@
 package testdata
 
 import (
-	"crypto/tls"
 	"crypto/x509"
+	tls "github.com/metacubex/utls"
 	"os"
 	"path"
 	"runtime"

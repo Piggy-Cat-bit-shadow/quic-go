@@ -3,8 +3,8 @@ package http3
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"fmt"
+	tls "github.com/metacubex/utls"
 	"io"
 	"log/slog"
 	"net"

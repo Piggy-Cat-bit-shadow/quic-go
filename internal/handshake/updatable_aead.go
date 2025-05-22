@@ -8,7 +8,6 @@ import (
 	tls "github.com/metacubex/utls"
 	"os"
 	"strconv"
-	"testing"
 	"time"
 
 	"github.com/quic-go/quic-go/internal/protocol"
@@ -17,9 +16,11 @@ import (
 	"github.com/quic-go/quic-go/logging"
 )
 
+var InTesting = false
+
 func keyUpdateInterval() uint64 {
 	// Reparsing the environment variable is not very performant, but it's only done in tests.
-	if testing.Testing() {
+	if InTesting {
 		if v, err := strconv.ParseUint(os.Getenv("QUIC_GO_TEST_KEY_UPDATE_INTERVAL"), 10, 64); err == nil {
 			return v
 		}

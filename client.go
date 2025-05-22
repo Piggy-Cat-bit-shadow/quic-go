@@ -2,8 +2,8 @@ package quic
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
+	tls "github.com/metacubex/utls"
 	"net"
 
 	"github.com/quic-go/quic-go/internal/protocol"

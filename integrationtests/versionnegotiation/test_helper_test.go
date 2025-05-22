@@ -2,9 +2,9 @@ package versionnegotiation
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"flag"
+	tls "github.com/metacubex/utls"
 	"os"
 
 	"github.com/quic-go/quic-go"

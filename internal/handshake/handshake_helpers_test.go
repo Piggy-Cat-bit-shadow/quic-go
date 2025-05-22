@@ -1,8 +1,8 @@
 package handshake
 
 import (
-	"crypto/tls"
 	"encoding/hex"
+	tls "github.com/metacubex/utls"
 	"strings"
 	"testing"
 

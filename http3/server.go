@@ -2,9 +2,9 @@ package http3
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
+	tls "github.com/metacubex/utls"
 	"io"
 	"log/slog"
 	"net"

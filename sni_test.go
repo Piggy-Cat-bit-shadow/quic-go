@@ -3,7 +3,7 @@ package quic
 import (
 	"context"
 	"crypto/rand"
-	"crypto/tls"
+	tls "github.com/metacubex/utls"
 	"io"
 	mrand "math/rand/v2"
 	"testing"

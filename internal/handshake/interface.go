@@ -2,8 +2,8 @@ package handshake
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
+	tls "github.com/metacubex/utls"
 	"io"
 
 	"github.com/quic-go/quic-go/internal/monotime"

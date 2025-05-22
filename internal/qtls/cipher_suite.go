@@ -1,8 +1,8 @@
 package qtls
 
 import (
-	"crypto/tls"
 	"fmt"
+	tls "github.com/metacubex/utls"
 	"unsafe"
 )
 

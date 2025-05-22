@@ -601,7 +601,7 @@ func (s *Server) handleRequest(conn *Conn, str datagramStream, decoder *qpack.De
 		return
 	}
 
-	connState := conn.ConnectionState().TLS
+	connState := convertConnState(conn.ConnectionState().TLS)
 	req.TLS = &connState
 	req.RemoteAddr = conn.RemoteAddr().String()
 

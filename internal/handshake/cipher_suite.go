@@ -4,8 +4,8 @@ import (
 	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/tls"
 	"fmt"
+	tls "github.com/metacubex/utls"
 
 	"golang.org/x/crypto/chacha20poly1305"
 )

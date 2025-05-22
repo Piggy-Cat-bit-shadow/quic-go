@@ -2,8 +2,8 @@ package self_test
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
+	tls "github.com/metacubex/utls"
 	"net"
 	"net/http"
 	"net/http/httptrace"

@@ -4,7 +4,7 @@ import (
 	"crypto"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/tls"
+	tls "github.com/metacubex/utls"
 	"testing"
 	"unsafe"
 

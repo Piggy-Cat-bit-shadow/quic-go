@@ -1,8 +1,8 @@
 package protocol
 
 import (
-	"crypto/tls"
 	"fmt"
+	tls "github.com/metacubex/utls"
 )
 
 // EncryptionLevel is the encryption level

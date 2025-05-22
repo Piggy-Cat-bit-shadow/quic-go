@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
-	mockquic "github.com/quic-go/quic-go/internal/mocks/quic"
-	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/metacubex/quic-go"
+	mockquic "github.com/metacubex/quic-go/internal/mocks/quic"
+	"github.com/metacubex/quic-go/internal/protocol"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

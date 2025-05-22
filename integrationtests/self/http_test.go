@@ -971,6 +971,32 @@ func TestHTTPStreamer(t *testing.T) {
 	require.Equal(t, PRData, repl)
 }
 
+func TestHTTPExportKeyingMaterial(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ekm", func(w http.ResponseWriter, r *http.Request) {
+		data, err := r.TLS.ExportKeyingMaterial("test", []byte("test12"), 8)
+		if err != nil {
+			panic(err)
+		}
+		if len(data) != 8 {
+			panic("unexpected length")
+		}
+		w.Write(data)
+	})
+	port := startHTTPServer(t, mux)
+
+	cl := newHTTP3Client(t)
+
+	resp, err := cl.Get(fmt.Sprintf("https://localhost:%d/ekm", port))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	body, err := io.ReadAll(&readerWithTimeout{Reader: resp.Body, Timeout: 2 * time.Second})
+	require.NoError(t, err)
+	data, err := resp.TLS.ExportKeyingMaterial("test", []byte("test12"), 8)
+	require.NoError(t, err)
+	require.Equal(t, data, body)
+}
+
 type blackHoleConn struct {
 	net.PacketConn
 	block atomic.Bool

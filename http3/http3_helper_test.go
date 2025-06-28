@@ -20,8 +20,8 @@ import (
 	"time"
 
 	"github.com/quic-go/qpack"
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/metacubex/quic-go"
+	"github.com/metacubex/quic-go/internal/protocol"
 
 	"github.com/stretchr/testify/require"
 )

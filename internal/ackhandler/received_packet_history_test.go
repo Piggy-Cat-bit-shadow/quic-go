@@ -250,7 +250,7 @@ func TestReceivedPacketHistoryRandomized(t *testing.T) {
 func BenchmarkHistoryReceiveSequentialPackets(b *testing.B) {
 	hist := newReceivedPacketHistory()
 	var pn protocol.PacketNumber
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		hist.ReceivedPacket(pn)
 		pn++
 	}
@@ -260,7 +260,7 @@ func BenchmarkHistoryReceiveSequentialPackets(b *testing.B) {
 func BenchmarkHistoryReceiveCommonCase(b *testing.B) {
 	hist := newReceivedPacketHistory()
 	var pn protocol.PacketNumber
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		hist.ReceivedPacket(pn)
 		pn++
 		if pn%2000 == 0 {
@@ -272,7 +272,7 @@ func BenchmarkHistoryReceiveCommonCase(b *testing.B) {
 func BenchmarkHistoryReceiveSequentialPacketsWithGaps(b *testing.B) {
 	hist := newReceivedPacketHistory()
 	var pn protocol.PacketNumber
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		hist.ReceivedPacket(pn)
 		pn += 2
 	}
@@ -298,7 +298,7 @@ func BenchmarkHistoryIsDuplicate(b *testing.B) {
 	}
 
 	var p protocol.PacketNumber
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		hist.IsPotentiallyDuplicate(p % pn)
 		p++
 	}

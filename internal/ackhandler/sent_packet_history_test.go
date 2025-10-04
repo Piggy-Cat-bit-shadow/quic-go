@@ -3,9 +3,9 @@ package ackhandler
 import (
 	"testing"
 
-	"github.com/quic-go/quic-go/internal/monotime"
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/slices"
+	"github.com/metacubex/quic-go/internal/monotime"
+	"github.com/metacubex/quic-go/internal/protocol"
+	"github.com/metacubex/quic-go/internal/slices"
 
 	"github.com/stretchr/testify/require"
 )

@@ -1,12 +1,12 @@
 package ackhandler
 
 import (
-	"slices"
 	"testing"
 
 	rand "github.com/metacubex/randv2"
 
 	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/slices"
 
 	"github.com/stretchr/testify/require"
 )

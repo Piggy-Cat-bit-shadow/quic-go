@@ -1,11 +1,11 @@
 package ackhandler
 
 import (
-	"slices"
 	"testing"
 
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/slices"
 
 	"github.com/stretchr/testify/require"
 )

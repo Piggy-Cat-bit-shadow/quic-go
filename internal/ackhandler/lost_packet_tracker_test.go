@@ -1,10 +1,10 @@
 package ackhandler
 
 import (
-	"maps"
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go/internal/maps"
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
 

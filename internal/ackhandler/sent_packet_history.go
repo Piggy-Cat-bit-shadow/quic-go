@@ -2,8 +2,8 @@ package ackhandler
 
 import (
 	"fmt"
+
 	"golang.org/x/exp/slices"
-	"iter"
 
 	"github.com/quic-go/quic-go/internal/protocol"
 )
@@ -79,7 +79,7 @@ func (h *sentPacketHistory) SentPathProbePacket(pn protocol.PacketNumber, p *pac
 	h.pathProbePackets = append(h.pathProbePackets, packetWithPacketNumber{PacketNumber: pn, packet: p})
 }
 
-func (h *sentPacketHistory) Packets() iter.Seq2[protocol.PacketNumber, *packet] {
+func (h *sentPacketHistory) Packets() func(yield func(protocol.PacketNumber, *packet) bool) {
 	return func(yield func(protocol.PacketNumber, *packet) bool) {
 		// h.firstPacketNumber might be updated in the yield function,
 		// so we need to save it here.
@@ -95,7 +95,7 @@ func (h *sentPacketHistory) Packets() iter.Seq2[protocol.PacketNumber, *packet] 
 	}
 }
 
-func (h *sentPacketHistory) PathProbes() iter.Seq2[protocol.PacketNumber, *packet] {
+func (h *sentPacketHistory) PathProbes() func(yield func(protocol.PacketNumber, *packet) bool) {
 	return func(yield func(protocol.PacketNumber, *packet) bool) {
 		for _, p := range h.pathProbePackets {
 			if !yield(p.PacketNumber, p.packet) {
@@ -126,7 +126,7 @@ func (h *sentPacketHistory) FirstOutstandingPathProbe() (protocol.PacketNumber, 
 	return h.pathProbePackets[0].PacketNumber, h.pathProbePackets[0].packet
 }
 
-func (h *sentPacketHistory) SkippedPackets() iter.Seq[protocol.PacketNumber] {
+func (h *sentPacketHistory) SkippedPackets() func(yield func(protocol.PacketNumber) bool) {
 	return func(yield func(protocol.PacketNumber) bool) {
 		for _, p := range h.skippedPackets {
 			if !yield(p) {

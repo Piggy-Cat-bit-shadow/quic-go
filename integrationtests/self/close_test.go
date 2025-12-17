@@ -2,12 +2,13 @@ package self_test
 
 import (
 	"context"
-	"github.com/metacubex/tls"
 	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/metacubex/tls"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/internal/protocol"

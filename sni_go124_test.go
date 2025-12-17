@@ -7,9 +7,9 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/binary"
+	mrand "github.com/metacubex/randv2"
 	"github.com/metacubex/tls"
 	"io"
-	mrand "math/rand/v2"
 	"testing"
 
 	"golang.org/x/crypto/cryptobyte"

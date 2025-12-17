@@ -7,8 +7,8 @@ import (
 	"errors"
 	"github.com/metacubex/http"
 	"github.com/metacubex/http/httptest"
+	mrand "github.com/metacubex/randv2"
 	"io"
-	mrand "math/rand/v2"
 	"testing"
 	"time"
 

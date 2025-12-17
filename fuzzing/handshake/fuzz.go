@@ -7,11 +7,11 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	mrand "github.com/metacubex/randv2"
 	"github.com/metacubex/tls"
 	"io"
 	"log"
 	"math"
-	mrand "math/rand/v2"
 	"net"
 
 	"github.com/quic-go/quic-go/fuzzing/internal/helper"

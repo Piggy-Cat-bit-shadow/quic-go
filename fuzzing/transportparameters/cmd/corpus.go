@@ -2,9 +2,9 @@ package main
 
 import (
 	"crypto/rand"
+	mrand "github.com/metacubex/randv2"
 	"log"
 	"math"
-	mrand "math/rand/v2"
 	"net/netip"
 	"time"
 

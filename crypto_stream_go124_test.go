@@ -4,8 +4,8 @@ package quic
 
 import (
 	"fmt"
+	mrand "github.com/metacubex/randv2"
 	"golang.org/x/exp/slices"
-	mrand "math/rand/v2"
 	"strings"
 	"testing"
 

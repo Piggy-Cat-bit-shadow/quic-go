@@ -8,6 +8,7 @@ import (
 )
 
 func Test(t *testing.T, f func(t *testing.T)) {
+	t.Setenv("GODEBUG", "asynctimerchan=0")
 	synctest.Test(t, f)
 }
 

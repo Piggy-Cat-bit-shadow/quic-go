@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"github.com/metacubex/http"
 	"github.com/metacubex/http/httptrace"
+	"golang.org/x/exp/maps"
 	"golang.org/x/exp/slog"
 	"io"
-	"maps"
 	"net/textproto"
 	"time"
 

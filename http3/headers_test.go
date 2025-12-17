@@ -8,7 +8,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/quic-go/qpack"
+	"github.com/metacubex/qpack"
 	"github.com/stretchr/testify/require"
 )
 

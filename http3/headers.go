@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/net/http/httpguts"
 
-	"github.com/quic-go/qpack"
+	"github.com/metacubex/qpack"
 )
 
 type qpackError struct{ err error }

@@ -16,7 +16,7 @@ import (
 	"github.com/quic-go/quic-go/http3/qlog"
 	"github.com/quic-go/quic-go/quicvarint"
 
-	"github.com/quic-go/qpack"
+	"github.com/metacubex/qpack"
 )
 
 const (

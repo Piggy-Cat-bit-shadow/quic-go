@@ -18,7 +18,7 @@ import (
 	"github.com/quic-go/quic-go/qlogwriter"
 	"github.com/quic-go/quic-go/quicvarint"
 
-	"github.com/quic-go/qpack"
+	"github.com/metacubex/qpack"
 )
 
 const maxQuarterStreamID = 1<<60 - 1

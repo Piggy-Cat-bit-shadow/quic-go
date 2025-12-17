@@ -3,8 +3,8 @@ package http3
 import (
 	"errors"
 	"fmt"
+	"github.com/metacubex/http"
 	"io"
-	"net/http"
 	"net/textproto"
 	"net/url"
 	"strconv"

@@ -4,12 +4,13 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"io"
 	"log"
 	"math/big"
+
+	"github.com/metacubex/tls"
 
 	"github.com/quic-go/quic-go"
 )

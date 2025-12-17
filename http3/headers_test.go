@@ -3,9 +3,9 @@ package http3
 import (
 	"bytes"
 	"fmt"
+	"github.com/metacubex/http"
 	"io"
 	"math"
-	"net/http"
 	"testing"
 
 	"github.com/quic-go/qpack"

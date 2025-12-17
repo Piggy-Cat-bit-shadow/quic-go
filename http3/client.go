@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/metacubex/http"
+	"github.com/metacubex/http/httptrace"
 	"io"
 	"log/slog"
 	"maps"
-	"net/http"
-	"net/http/httptrace"
 	"net/textproto"
 	"time"
 

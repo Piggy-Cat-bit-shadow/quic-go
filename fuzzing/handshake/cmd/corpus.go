@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
+	"github.com/metacubex/tls"
 	"log"
 	"net"
 

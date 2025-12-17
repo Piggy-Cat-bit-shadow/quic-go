@@ -3,6 +3,8 @@ module github.com/quic-go/quic-go
 go 1.24
 
 require (
+	github.com/metacubex/http v0.1.0
+	github.com/metacubex/tls v0.1.0
 	github.com/quic-go/qpack v0.6.0
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/mock v0.5.2
@@ -14,10 +16,16 @@ require (
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/google/pprof v0.0.0-20240727154555-813a5fbdbec8 // indirect
 	github.com/jordanlewis/gcassert v0.0.0-20250430164644-389ef753e22e // indirect
 	github.com/kr/pretty v0.3.1 // indirect
+	github.com/metacubex/cpu v0.1.0 // indirect
+	github.com/metacubex/hkdf v0.1.0 // indirect
+	github.com/metacubex/hpke v0.1.0 // indirect
+	github.com/metacubex/mlkem v0.1.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rogpeppe/go-internal v1.10.0 // indirect
+	golang.org/x/exp v0.0.0-20240904232852-e7e105dedf7e // indirect
 	golang.org/x/mod v0.27.0 // indirect
 	golang.org/x/text v0.28.0 // indirect
 	golang.org/x/tools v0.36.0 // indirect

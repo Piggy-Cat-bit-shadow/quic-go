@@ -11,7 +11,7 @@ package http3
 
 import (
 	context "context"
-	http "net/http"
+	http "github.com/metacubex/http"
 	reflect "reflect"
 
 	gomock "go.uber.org/mock/gomock"

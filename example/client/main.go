@@ -2,14 +2,15 @@ package main
 
 import (
 	"bytes"
-	"crypto/tls"
 	"crypto/x509"
 	"flag"
 	"io"
 	"log"
-	"net/http"
 	"os"
 	"sync"
+
+	"github.com/metacubex/http"
+	"github.com/metacubex/tls"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"

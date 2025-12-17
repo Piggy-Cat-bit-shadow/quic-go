@@ -4,8 +4,8 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/tls"
 	"fmt"
+	"github.com/metacubex/tls"
 	"testing"
 
 	"github.com/quic-go/quic-go/internal/protocol"

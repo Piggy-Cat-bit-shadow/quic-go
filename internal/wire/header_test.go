@@ -458,10 +458,8 @@ func BenchmarkIs0RTTPacket(b *testing.B) {
 		src.Read(packets[i])
 	}
 
-	var i int
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		Is0RTTPacket(packets[i%len(packets)])
-		i++
 	}
 }
 
@@ -497,7 +495,7 @@ func benchmarkInitialPacketParsing(b *testing.B, token []byte) {
 	}
 	data = append(data, make([]byte, 1000)...)
 
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		h, _, _, err := ParsePacket(data)
 		if err != nil {
 			b.Fatal(err)
@@ -528,7 +526,7 @@ func BenchmarkParseRetry(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		h, _, _, err := ParsePacket(data)
 		if err != nil {
 			b.Fatal(err)
@@ -558,7 +556,7 @@ func benchmarkArbitraryHeaderParsing(b *testing.B, destLen, srcLen int) {
 	buf = append(buf, srcConnID...)
 
 	b.ReportAllocs()
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		parsed, d, s, err := ParseArbitraryLenConnectionIDs(buf)
 		if err != nil {
 			b.Fatal(err)

@@ -10,10 +10,10 @@ import (
 
 	mrand "github.com/metacubex/randv2"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/internal/synctest"
-	"github.com/quic-go/quic-go/internal/wire"
-	"github.com/quic-go/quic-go/testutils/simnet"
+	"github.com/metacubex/quic-go"
+	"github.com/metacubex/quic-go/internal/synctest"
+	"github.com/metacubex/quic-go/internal/wire"
+	"github.com/metacubex/quic-go/testutils/simnet"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

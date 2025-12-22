@@ -12,7 +12,7 @@ import (
 
 	"github.com/metacubex/tls"
 
-	"github.com/quic-go/quic-go"
+	"github.com/metacubex/quic-go"
 )
 
 const addr = "localhost:4242"

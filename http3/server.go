@@ -19,11 +19,11 @@ import (
 	"golang.org/x/exp/slices"
 	"golang.org/x/exp/slog"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3/qlog"
-	"github.com/quic-go/quic-go/internal/utils"
-	"github.com/quic-go/quic-go/qlogwriter"
-	"github.com/quic-go/quic-go/quicvarint"
+	"github.com/metacubex/quic-go"
+	"github.com/metacubex/quic-go/http3/qlog"
+	"github.com/metacubex/quic-go/internal/utils"
+	"github.com/metacubex/quic-go/qlogwriter"
+	"github.com/metacubex/quic-go/quicvarint"
 
 	"github.com/metacubex/qpack"
 )

@@ -296,6 +296,8 @@ func (h *cryptoSetup) handleEvent(ev tls.QUICEvent) (err error) {
 			ev.SessionState.EarlyData = allowEarlyData
 		}
 		return nil
+	case tls.QUICErrorEvent:
+		return ev.Err
 	default:
 		// Unknown events should be ignored.
 		// crypto/tls will ensure that this is safe to do.

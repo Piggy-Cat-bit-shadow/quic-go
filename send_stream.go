@@ -648,6 +648,7 @@ func (s *SendStream) closeForShutdown(err error) {
 		s.returnFramesToPool()
 	}
 	s.mutex.Unlock()
+	s.ctxCancel(err)
 	s.signalWrite()
 }
 

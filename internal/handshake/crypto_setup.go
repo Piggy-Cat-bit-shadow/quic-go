@@ -87,8 +87,6 @@ func NewCryptoSetupClient(
 		version,
 	)
 
-	tlsConf = tlsConf.Clone()
-	tlsConf.MinVersion = tls.VersionTLS13
 	cs.tlsConf = tlsConf
 	cs.allow0RTT = enable0RTT
 
@@ -130,6 +128,7 @@ func NewCryptoSetupServer(
 	cs.conn = tls.QUICServer(&tls.QUICConfig{
 		TLSConfig:           tlsConf,
 		EnableSessionEvents: true,
+		ClientHelloInfoConn: &conn{localAddr: localAddr, remoteAddr: remoteAddr},
 	})
 	return cs
 }

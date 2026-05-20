@@ -16,8 +16,8 @@ github.com/metacubex/qpack v0.6.0 h1:YqClGIMOpiRYLjV1qOs483Od08MdPgRnHjt90FuaAKw
 github.com/metacubex/qpack v0.6.0/go.mod h1:lKGSi7Xk94IMvHGOmxS9eIei3bvIqpOAImEBsaOwTkA=
 github.com/metacubex/randv2 v0.2.0 h1:uP38uBvV2SxYfLj53kuvAjbND4RUDfFJjwr4UigMiLs=
 github.com/metacubex/randv2 v0.2.0/go.mod h1:kFi2SzrQ5WuneuoLLCMkABtiBu6VRrMrWFqSPyj2cxY=
-github.com/metacubex/tls v0.1.0 h1:1kjR/1q2uU1cZIwiHYEnWzS4L+0Cu1/X3yfIQ76BzNY=
-github.com/metacubex/tls v0.1.0/go.mod h1:0XeVdL0cBw+8i5Hqy3lVeP9IyD/LFTq02ExvHM6rzEM=
+github.com/metacubex/tls v0.1.6 h1:t2ubLneYa4ceyIC++54a57BLqZFA/QYUrhdjLk2GPwo=
+github.com/metacubex/tls v0.1.6/go.mod h1:0XeVdL0cBw+8i5Hqy3lVeP9IyD/LFTq02ExvHM6rzEM=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=

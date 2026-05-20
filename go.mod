@@ -6,7 +6,7 @@ require (
 	github.com/metacubex/http v0.1.0
 	github.com/metacubex/qpack v0.6.0
 	github.com/metacubex/randv2 v0.2.0
-	github.com/metacubex/tls v0.1.0
+	github.com/metacubex/tls v0.1.6
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/mock v0.4.0
 	golang.org/x/crypto v0.33.0

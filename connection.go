@@ -577,8 +577,7 @@ func (c *Conn) run() (err error) {
 
 		for !c.receivedPackets.Empty() {
 			p := c.receivedPackets.PopFront()
-			p.buffer.Decrement()
-			p.buffer.MaybeRelease()
+			p.buffer.releaseRef()
 		}
 	}()
 
@@ -1056,10 +1055,18 @@ func (c *Conn) handlePackets() (wasProcessed bool, _ error) {
 }
 
 func (c *Conn) handleOnePacket(rp receivedPacket, datagramPayloadChecksum qlog.DatagramPayloadChecksum) (wasProcessed bool, _ error) {
+	// Keep the outer packet-processing reference until all coalesced packet
+	// slices have been examined. Individual packet handlers release their own
+	// references, but the loop may still access the shared backing buffer.
+	rp.buffer.Retain()
+	defer rp.buffer.releaseRef()
+
 	c.sentPacketHandler.ReceivedBytes(rp.Size(), rp.rcvTime)
 
 	if wire.IsVersionNegotiationPacket(rp.data) {
-		return false, c.handleVersionNegotiationPacket(rp)
+		err := c.handleVersionNegotiationPacket(rp)
+		rp.buffer.releaseRef()
+		return false, err
 	}
 
 	var counter uint8
@@ -1168,7 +1175,6 @@ func (c *Conn) handleOnePacket(rp receivedPacket, datagramPayloadChecksum qlog.D
 		}
 	}
 
-	p.buffer.MaybeRelease()
 	c.blocked = blockModeNone
 	return wasProcessed, nil
 }
@@ -1183,7 +1189,7 @@ func (c *Conn) handleShortHeaderPacket(
 	defer func() {
 		// Put back the packet buffer if the packet wasn't queued for later decryption.
 		if !wasQueued {
-			p.buffer.Decrement()
+			p.buffer.releaseRef()
 		}
 	}()
 
@@ -1324,7 +1330,7 @@ func (c *Conn) handleLongHeaderPacket(p receivedPacket, hdr *wire.Header, datagr
 	defer func() {
 		// Put back the packet buffer if the packet wasn't queued for later decryption.
 		if !wasQueued {
-			p.buffer.Decrement()
+			p.buffer.releaseRef()
 		}
 	}()
 

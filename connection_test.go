@@ -2839,6 +2839,9 @@ func TestConnectionVersionNegotiationInvalidPackets(t *testing.T) {
 	eventRecorder.Clear()
 
 	// unparseable, since it's missing 2 bytes
+	// handleOnePacket consumes its packet-buffer reference; provide a fresh
+	// reference for this independently processed test packet.
+	vnp.buffer.refCount.Store(1)
 	vnp.data = vnp.data[:len(vnp.data)-2]
 	wasProcessed, err = tc.conn.handleOnePacket(vnp, 0)
 	require.NoError(t, err)

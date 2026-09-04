@@ -1,6 +1,8 @@
 package quic
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/metacubex/quic-go/internal/protocol"
@@ -37,8 +39,76 @@ func TestBufferPoolSplitting(t *testing.T) {
 	buf.Split()
 	buf.Split()
 	// now we have 3 parts
-	buf.Decrement()
-	buf.Decrement()
-	buf.Decrement()
-	require.Panics(t, func() { buf.Decrement() })
+	buf.releaseRef()
+	buf.releaseRef()
+	buf.releaseRef()
+	require.Panics(t, func() { buf.releaseRef() })
+}
+
+func TestPacketBufferConcurrentFinalReleaseReturnsToPoolOnce(t *testing.T) {
+	var putBacks atomic.Int32
+	packetBufferPutBackHook = func() { putBacks.Add(1) }
+	defer func() { packetBufferPutBackHook = nil }()
+
+	const rounds = 1000
+	for i := 0; i < rounds; i++ {
+		refs := 2 + i%7
+		buf := getPacketBuffer()
+		handles := make([]*retainedPacketBuffer, refs-1)
+		for j := range handles {
+			buf.Retain()
+			handles[j] = &retainedPacketBuffer{buffer: buf}
+		}
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(refs)
+		go func() {
+			defer wg.Done()
+			<-start
+			buf.releaseRef() // base packet-processing reference
+		}()
+		for _, handle := range handles {
+			go func(h *retainedPacketBuffer) {
+				defer wg.Done()
+				<-start
+				h.Release()
+			}(handle)
+		}
+		close(start)
+		wg.Wait()
+	}
+
+	require.EqualValues(t, rounds, putBacks.Load())
+}
+
+func TestPacketBufferReleaseRefAndRetainedReleaseAreIdempotent(t *testing.T) {
+	var putBacks atomic.Int32
+	packetBufferPutBackHook = func() { putBacks.Add(1) }
+	defer func() { packetBufferPutBackHook = nil }()
+
+	buf := getPacketBuffer()
+	buf.Retain()
+	handle := &retainedPacketBuffer{buffer: buf}
+	handle.Release()
+	handle.Release()
+	require.Zero(t, putBacks.Load(), "the base reference is still live")
+	buf.releaseRef()
+	require.EqualValues(t, 1, putBacks.Load())
+}
+
+func TestPacketBufferSplitReferencesUseSingleFinalRelease(t *testing.T) {
+	var putBacks atomic.Int32
+	packetBufferPutBackHook = func() { putBacks.Add(1) }
+	defer func() { packetBufferPutBackHook = nil }()
+
+	buf := getPacketBuffer()
+	buf.Split()
+	buf.Split()
+	buf.Retain()
+	buf.Retain()
+	for i := 0; i < 5; i++ {
+		buf.releaseRef()
+	}
+	require.EqualValues(t, 1, putBacks.Load())
 }

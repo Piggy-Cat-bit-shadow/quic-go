@@ -11,8 +11,9 @@ type packetBuffer struct {
 	Data []byte
 
 	// refCount counts how many packets Data is used in.
-	// It doesn't support concurrent use.
-	// It is > 1 when used for coalesced packet.
+	// The reference count is safe to transition concurrently. Payload access
+	// still follows the ownership contract of the individual packet users.
+	// It is > 1 when used for coalesced packets or retained DATAGRAMs.
 	refCount atomic.Int32
 }
 
@@ -32,36 +33,31 @@ type retainedPacketBuffer struct {
 
 func (r *retainedPacketBuffer) Release() {
 	if r != nil && r.once.CompareAndSwap(false, true) {
-		r.buffer.Decrement()
-		r.buffer.MaybeRelease()
+		r.buffer.releaseRef()
 	}
 }
 
-// Decrement decrements the reference counter.
-// It doesn't put the buffer back into the pool.
-func (b *packetBuffer) Decrement() {
-	if b.refCount.Add(-1) < 0 {
+// releaseRef releases one reference. The atomic decrement and the final
+// put-back decision are one state transition, so exactly one caller can
+// return the buffer to its pool.
+func (b *packetBuffer) releaseRef() int32 {
+	n := b.refCount.Add(-1)
+	if n < 0 {
 		panic("negative packetBuffer refCount")
 	}
-}
-
-// MaybeRelease puts the packet buffer back into the pool,
-// if the reference counter already reached 0.
-func (b *packetBuffer) MaybeRelease() {
-	// only put the packetBuffer back if it's not used any more
-	if b.refCount.Load() == 0 {
+	if n == 0 {
 		b.putBack()
 	}
+	return n
 }
 
 // Release puts back the packet buffer into the pool.
-// It should be called when processing is definitely finished.
+// It asserts that this caller owns the final reference. Shared lifetimes must
+// use releaseRef instead.
 func (b *packetBuffer) Release() {
-	b.Decrement()
-	if b.refCount.Load() != 0 {
+	if b.releaseRef() != 0 {
 		panic("packetBuffer refCount not zero")
 	}
-	b.putBack()
 }
 
 // Len returns the length of Data
@@ -69,6 +65,9 @@ func (b *packetBuffer) Len() protocol.ByteCount { return protocol.ByteCount(len(
 func (b *packetBuffer) Cap() protocol.ByteCount { return protocol.ByteCount(cap(b.Data)) }
 
 func (b *packetBuffer) putBack() {
+	if packetBufferPutBackHook != nil {
+		packetBufferPutBackHook()
+	}
 	if cap(b.Data) == protocol.MaxPacketBufferSize {
 		bufferPool.Put(b)
 		return
@@ -79,6 +78,10 @@ func (b *packetBuffer) putBack() {
 	}
 	panic("putPacketBuffer called with packet of wrong size!")
 }
+
+// packetBufferPutBackHook is used by package tests to count final ownership
+// transitions. It is nil in production.
+var packetBufferPutBackHook func()
 
 var bufferPool, largeBufferPool sync.Pool
 

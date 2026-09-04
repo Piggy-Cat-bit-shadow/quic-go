@@ -107,9 +107,11 @@ func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
 		}
 	}
 	h.rcvMx.Unlock()
-	if !queued && h.logger.Debug() {
+	if !queued {
 		b.Release()
-		h.logger.Debugf("Discarding received DATAGRAM frame (%d bytes payload)", len(f.Data))
+		if h.logger.Debug() {
+			h.logger.Debugf("Discarding received DATAGRAM frame (%d bytes payload)", len(f.Data))
+		}
 	}
 }
 

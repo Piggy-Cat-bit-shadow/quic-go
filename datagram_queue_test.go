@@ -86,6 +86,19 @@ func TestDatagramQueueReceive(t *testing.T) {
 	require.Equal(t, []byte("bar"), data)
 }
 
+func TestDatagramQueueTransfersFrameDataOwnership(t *testing.T) {
+	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
+	data := []byte("owned datagram")
+	frame := &wire.DatagramFrame{Data: data}
+	queue.HandleDatagramFrame(frame)
+	received, err := queue.Receive(context.Background())
+	require.NoError(t, err)
+	require.NotEmpty(t, received)
+	require.True(t, &received[0] == &data[0], "receive queue made a duplicate payload allocation")
+	received[0] = 'O'
+	require.Equal(t, byte('O'), data[0])
+}
+
 func TestDatagramQueueReceiveBlocking(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		queue := newDatagramQueue(func() {}, utils.DefaultLogger)

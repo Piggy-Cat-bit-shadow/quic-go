@@ -28,6 +28,14 @@ func TestParseDatagramFrameWithoutLength(t *testing.T) {
 	require.Equal(t, len(data), l)
 }
 
+func TestParseDatagramFrameOwnsPayload(t *testing.T) {
+	data := []byte("parser-owned")
+	frame, _, err := parseDatagramFrame(data, 0x30, protocol.Version1)
+	require.NoError(t, err)
+	data[0] = 'X'
+	require.Equal(t, byte('p'), frame.Data[0])
+}
+
 func TestParseDatagramFrameErrorsOnLengthLongerThanFrame(t *testing.T) {
 	data := encodeVarInt(0x6) // length
 	data = append(data, []byte("fooba")...)

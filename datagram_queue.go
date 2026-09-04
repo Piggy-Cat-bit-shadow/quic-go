@@ -91,12 +91,13 @@ func (h *datagramQueue) Pop() {
 
 // HandleDatagramFrame handles a received DATAGRAM frame.
 func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
-	data := make([]byte, len(f.Data))
-	copy(data, f.Data)
 	var queued bool
 	h.rcvMx.Lock()
 	if len(h.rcvQueue) < maxDatagramRcvQueueLen {
-		h.rcvQueue = append(h.rcvQueue, data)
+		// DatagramFrame.Data is an owned parser allocation. Transfer that
+		// ownership into the receive queue; the parser has already detached it
+		// from the decrypted packet buffer.
+		h.rcvQueue = append(h.rcvQueue, f.Data)
 		queued = true
 		select {
 		case h.rcvd <- struct{}{}:

@@ -298,6 +298,20 @@ func TestDatagramReceiving(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 }
 
+func TestDatagramReceivingCloseDrainsQueuedDatagrams(t *testing.T) {
+	client, _ := newStreamPair(t)
+	var clearer mockStreamClearer
+	str := newStateTrackingStream(client, &clearer, func([]byte) error { return nil })
+
+	for i := 0; i < streamDatagramQueueLen; i++ {
+		str.enqueueDatagram([]byte{byte(i)})
+	}
+	str.closeReceive(assert.AnError)
+
+	_, err := str.ReceiveDatagram(context.Background())
+	require.ErrorIs(t, err, assert.AnError)
+}
+
 func TestDatagramSending(t *testing.T) {
 	var sendQueue [][]byte
 	errors := []error{nil, nil, assert.AnError}

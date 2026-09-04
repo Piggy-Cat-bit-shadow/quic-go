@@ -2,6 +2,7 @@ package wire
 
 import (
 	"io"
+	"sync/atomic"
 
 	"github.com/metacubex/quic-go/internal/protocol"
 	"github.com/metacubex/quic-go/quicvarint"
@@ -20,6 +21,23 @@ type DatagramFrame struct {
 	// DataOwner is set only by the QUIC borrowed receive path. It is kept as
 	// an interface to avoid coupling the wire parser to packetBuffer.
 	DataOwner interface{ Release() }
+	// SendOwner keeps caller-owned send buffers alive until the frame has been
+	// serialized, or until the frame is discarded before serialization.
+	SendOwner         interface{ Release() }
+	sendOwnerReleased atomic.Bool
+}
+
+// ReleaseSendOwner releases an asynchronously-owned send buffer exactly once.
+// It also detaches the mutable caller backing from frame metadata retained by
+// sent-packet history. DATAGRAM frames are never retransmitted.
+func (f *DatagramFrame) ReleaseSendOwner() {
+	if f == nil || f.SendOwner == nil || !f.sendOwnerReleased.CompareAndSwap(false, true) {
+		return
+	}
+	owner := f.SendOwner
+	f.SendOwner = nil
+	f.Data = nil
+	owner.Release()
 }
 
 func parseDatagramFrame(b []byte, typ FrameType, _ protocol.Version) (*DatagramFrame, int, error) {

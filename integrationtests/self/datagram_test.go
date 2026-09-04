@@ -22,6 +22,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type ownedDatagramTestOwner struct {
+	data     []byte
+	released chan struct{}
+	count    atomic.Int32
+}
+
+func (o *ownedDatagramTestOwner) Release() {
+	if o.count.Add(1) == 1 {
+		close(o.released)
+	}
+}
+
 func TestDatagramNegotiation(t *testing.T) {
 	t.Run("server enable, client enable", func(t *testing.T) {
 		testDatagramNegotiation(t, true, true)
@@ -35,6 +47,36 @@ func TestDatagramNegotiation(t *testing.T) {
 	t.Run("server disable, client disable", func(t *testing.T) {
 		testDatagramNegotiation(t, false, false)
 	})
+}
+
+func TestOwnedDatagramSerializesBeforeRelease(t *testing.T) {
+	server, err := quic.Listen(newUDPConnLocalhost(t), getTLSConfig(), getQuicConfig(&quic.Config{EnableDatagrams: true}))
+	require.NoError(t, err)
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	client, err := quic.Dial(ctx, newUDPConnLocalhost(t), server.Addr(), getTLSClientConfig(), getQuicConfig(&quic.Config{EnableDatagrams: true}))
+	require.NoError(t, err)
+	defer client.CloseWithError(0, "")
+	serverConn, err := server.Accept(ctx)
+	require.NoError(t, err)
+	defer serverConn.CloseWithError(0, "")
+
+	data := []byte("owned datagram")
+	owner := &ownedDatagramTestOwner{data: data, released: make(chan struct{})}
+	require.NoError(t, client.SendDatagramOwned(data, owner))
+	select {
+	case <-owner.released:
+	case <-ctx.Done():
+		require.NoError(t, ctx.Err())
+	}
+	for i := range data {
+		data[i] = 'x'
+	}
+	received, err := serverConn.ReceiveDatagram(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []byte("owned datagram"), received)
+	require.EqualValues(t, 1, owner.count.Load())
 }
 
 func testDatagramNegotiation(t *testing.T, serverEnableDatagram, clientEnableDatagram bool) {

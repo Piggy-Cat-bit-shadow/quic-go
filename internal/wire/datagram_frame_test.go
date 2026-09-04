@@ -2,12 +2,17 @@ package wire
 
 import (
 	"io"
+	"sync/atomic"
 	"testing"
 
 	"github.com/metacubex/quic-go/internal/protocol"
 
 	"github.com/stretchr/testify/require"
 )
+
+type testDatagramSendOwner struct{ releases atomic.Int32 }
+
+func (o *testDatagramSendOwner) Release() { o.releases.Add(1) }
 
 func TestParseDatagramFrameWithLength(t *testing.T) {
 	data := encodeVarInt(0x6) // length
@@ -78,6 +83,16 @@ func TestWriteDatagramFrameWithoutLength(t *testing.T) {
 	expected = append(expected, []byte("Lorem ipsum")...)
 	require.Equal(t, expected, b)
 	require.Len(t, b, int(f.Length(protocol.Version1)))
+}
+
+func TestDatagramFrameReleaseSendOwnerExactlyOnce(t *testing.T) {
+	owner := new(testDatagramSendOwner)
+	f := &DatagramFrame{Data: []byte("owned"), SendOwner: owner}
+	f.ReleaseSendOwner()
+	f.ReleaseSendOwner()
+	require.EqualValues(t, 1, owner.releases.Load())
+	require.Nil(t, f.Data)
+	require.Nil(t, f.SendOwner)
 }
 
 func TestMaxDatagramLenWithoutDataLenPresent(t *testing.T) {

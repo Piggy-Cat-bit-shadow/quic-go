@@ -2724,6 +2724,7 @@ func (c *Conn) maybeSendAckOnlyPacket(now monotime.Time) error {
 	}
 	c.logShortHeaderPacket(p, ecn, buf.Len())
 	c.registerPackedShortHeaderPacket(p, ecn, now)
+	releaseOwnedDatagrams(p.Frames)
 	c.sendQueue.Send(buf, 0, ecn)
 	return nil
 }
@@ -2778,6 +2779,7 @@ func (c *Conn) appendOneShortHeaderPacket(buf *packetBuffer, maxSize protocol.By
 	size := buf.Len() - startLen
 	c.logShortHeaderPacket(p, ecn, size)
 	c.registerPackedShortHeaderPacket(p, ecn, now)
+	releaseOwnedDatagrams(p.Frames)
 	return size, nil
 }
 
@@ -2873,6 +2875,12 @@ func (c *Conn) sendPackedCoalescedPacket(packet *coalescedPacket, ecn protocol.E
 		)
 	}
 	c.connIDManager.SentPacket()
+	if packet.shortHdrPacket != nil {
+		releaseOwnedDatagrams(packet.shortHdrPacket.Frames)
+	}
+	for _, p := range packet.longHdrPackets {
+		releaseOwnedDatagrams(p.frames)
+	}
 	c.sendQueue.Send(packet.buffer, 0, ecn)
 	return nil
 }
@@ -3076,6 +3084,32 @@ func (c *Conn) SendDatagram(p []byte) error {
 	}
 	f.Data = make([]byte, len(p))
 	copy(f.Data, p)
+	return c.datagramQueue.Add(f)
+}
+
+// DatagramPayloadOwner is released exactly once by quic-go after an owned
+// DATAGRAM has been serialized, or when it is dropped or drained on close.
+// A nil error from SendDatagramOwned transfers ownership to quic-go. An error
+// means ownership remains with the caller.
+type DatagramPayloadOwner interface{ Release() }
+
+// SendDatagramOwned queues p without copying it. The caller must not mutate p
+// after this method returns nil, and must release owner itself when an error
+// is returned.
+func (c *Conn) SendDatagramOwned(p []byte, owner DatagramPayloadOwner) error {
+	if !c.supportsDatagrams() {
+		return errors.New("datagram support disabled")
+	}
+	f := &wire.DatagramFrame{DataLenPresent: true}
+	maxDataLen := utils.Min(
+		f.MaxDataLen(c.peerParams.MaxDatagramFrameSize, c.version),
+		protocol.ByteCount(c.maxPayloadSizeEstimate.Load()),
+	)
+	if protocol.ByteCount(len(p)) > maxDataLen {
+		return &DatagramTooLargeError{MaxDatagramPayloadSize: int64(maxDataLen)}
+	}
+	f.Data = p
+	f.SendOwner = owner
 	return c.datagramQueue.Add(f)
 }
 

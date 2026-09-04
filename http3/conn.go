@@ -298,6 +298,35 @@ func (c *rawConn) sendDatagramBuffer(streamID quic.StreamID, buf []byte, offset,
 	return c.conn.SendDatagram(data)
 }
 
+func (c *rawConn) sendDatagramBufferOwned(streamID quic.StreamID, buf []byte, offset, length int, owner quic.DatagramPayloadOwner) error {
+	if offset < 0 || length < 0 || offset > len(buf) || length > len(buf)-offset {
+		return fmt.Errorf("invalid datagram buffer range: offset=%d length=%d buffer=%d", offset, length, len(buf))
+	}
+	payload := buf[offset : offset+length]
+	quarterStreamID := uint64(streamID / 4)
+	var encoded [8]byte
+	prefix := quicvarint.Append(encoded[:0], quarterStreamID)
+	if offset < len(prefix) {
+		// There is no safe in-place ownership path without headroom. The legacy
+		// path copies synchronously, so release only after it accepts the copy.
+		err := c.sendDatagram(streamID, payload)
+		if err == nil && owner != nil {
+			owner.Release()
+		}
+		return err
+	}
+	start := offset - len(prefix)
+	copy(buf[start:offset], prefix)
+	data := buf[start : offset+length]
+	if c.qlogger != nil {
+		c.qlogger.RecordEvent(qlog.DatagramCreated{
+			QuarterStreamID: quarterStreamID,
+			Raw:             qlog.RawInfo{Length: len(data), PayloadLength: len(payload)},
+		})
+	}
+	return c.conn.SendDatagramOwned(data, owner)
+}
+
 func (c *rawConn) receiveDatagrams() error {
 	for {
 		b, err := c.conn.ReceiveDatagramBuffer(context.Background())

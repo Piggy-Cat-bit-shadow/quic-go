@@ -671,7 +671,7 @@ func (p *packetPacker) composeNextPacket(
 				// The DATAGRAM frame doesn't fit, and the packet doesn't contain an ACK.
 				// Discard this frame. There's no point in retrying this in the next packet,
 				// as it's unlikely that the available packet size will increase.
-				p.datagramQueue.Pop()
+				p.datagramQueue.Drop()
 				p.peekTimes = 0
 			}
 			// If the DATAGRAM frame was too large and the packet contained an ACK, we'll try to send it out later.
@@ -680,7 +680,7 @@ func (p *packetPacker) composeNextPacket(
 				if p.datagramQueue.logger != nil && p.datagramQueue.logger.Debug() {
 					p.datagramQueue.logger.Debugf("Discarded DATAGRAM frame (%d bytes payload)", size)
 				}
-				p.datagramQueue.Pop()
+				p.datagramQueue.Drop()
 				p.peekTimes = 0
 			}
 		}
@@ -883,6 +883,12 @@ func (p *packetPacker) getLongHeader(encLevel protocol.EncryptionLevel, v protoc
 }
 
 func (p *packetPacker) appendLongHeaderPacket(buffer *packetBuffer, header *wire.ExtendedHeader, pl payload, padding protocol.ByteCount, encLevel protocol.EncryptionLevel, sealer sealer, v protocol.Version) (*longHeaderPacket, error) {
+	packed := false
+	defer func() {
+		if !packed {
+			releaseOwnedDatagrams(pl.frames)
+		}
+	}()
 	var paddingLen protocol.ByteCount
 	pnLen := protocol.ByteCount(header.PacketNumberLen)
 	if pl.length < 4-pnLen {
@@ -909,6 +915,7 @@ func (p *packetPacker) appendLongHeaderPacket(buffer *packetBuffer, header *wire
 	if pn := p.pnManager.PopPacketNumber(encLevel); pn != header.PacketNumber {
 		return nil, fmt.Errorf("packetPacker BUG: Peeked and Popped packet numbers do not match: expected %d, got %d", pn, header.PacketNumber)
 	}
+	packed = true
 	return &longHeaderPacket{
 		header:       header,
 		ack:          pl.ack,
@@ -930,6 +937,12 @@ func (p *packetPacker) appendShortHeaderPacket(
 	isMTUProbePacket bool,
 	v protocol.Version,
 ) (shortHeaderPacket, error) {
+	packed := false
+	defer func() {
+		if !packed {
+			releaseOwnedDatagrams(pl.frames)
+		}
+	}()
 	var paddingLen protocol.ByteCount
 	if pl.length < 4-protocol.ByteCount(pnLen) {
 		paddingLen = 4 - protocol.ByteCount(pnLen) - pl.length
@@ -959,6 +972,7 @@ func (p *packetPacker) appendShortHeaderPacket(
 	if newPN := p.pnManager.PopPacketNumber(protocol.Encryption1RTT); newPN != pn {
 		return shortHeaderPacket{}, fmt.Errorf("packetPacker BUG: Peeked and Popped packet numbers do not match: expected %d, got %d", pn, newPN)
 	}
+	packed = true
 	return shortHeaderPacket{
 		PacketNumber:         pn,
 		PacketNumberLen:      pnLen,
@@ -995,6 +1009,7 @@ func (p *packetPacker) appendPacketPayload(raw []byte, pl payload, paddingLen pr
 		var err error
 		raw, err = f.Frame.Append(raw, v)
 		if err != nil {
+			releaseOwnedDatagrams(pl.frames)
 			return nil, err
 		}
 	}
@@ -1002,6 +1017,7 @@ func (p *packetPacker) appendPacketPayload(raw []byte, pl payload, paddingLen pr
 		var err error
 		raw, err = f.Frame.Append(raw, v)
 		if err != nil {
+			releaseOwnedDatagrams(pl.frames)
 			return nil, err
 		}
 	}
@@ -1010,6 +1026,14 @@ func (p *packetPacker) appendPacketPayload(raw []byte, pl payload, paddingLen pr
 		return nil, fmt.Errorf("PacketPacker BUG: payload size inconsistent (expected %d, got %d bytes)", pl.length, payloadSize)
 	}
 	return raw, nil
+}
+
+func releaseOwnedDatagrams(frames []ackhandler.Frame) {
+	for _, f := range frames {
+		if d, ok := f.Frame.(*wire.DatagramFrame); ok {
+			d.ReleaseSendOwner()
+		}
+	}
 }
 
 func (p *packetPacker) encryptPacket(raw []byte, sealer sealer, pn protocol.PacketNumber, payloadOffset, pnLen protocol.ByteCount) []byte {

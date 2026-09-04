@@ -40,6 +40,36 @@ func TestDatagramQueuePeekAndPop(t *testing.T) {
 	require.Nil(t, queue.Peek())
 }
 
+func TestDatagramQueueOwnedSendLifecycle(t *testing.T) {
+	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
+	owner := new(countingDatagramOwner)
+	frame := &wire.DatagramFrame{Data: []byte("owned"), SendOwner: owner}
+	require.NoError(t, queue.Add(frame))
+	queue.Pop()
+	require.Zero(t, owner.count(), "Pop transfers ownership to the packer")
+	frame.ReleaseSendOwner()
+	frame.ReleaseSendOwner()
+	require.EqualValues(t, 1, owner.count())
+	require.Nil(t, frame.Data, "released frame must not retain mutable caller backing")
+}
+
+func TestDatagramQueueDropAndCloseReleaseOwnedSends(t *testing.T) {
+	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
+	dropped := new(countingDatagramOwner)
+	require.NoError(t, queue.Add(&wire.DatagramFrame{Data: []byte("drop"), SendOwner: dropped}))
+	queue.Drop()
+	require.EqualValues(t, 1, dropped.count())
+
+	owners := []*countingDatagramOwner{new(countingDatagramOwner), new(countingDatagramOwner), new(countingDatagramOwner)}
+	for _, owner := range owners {
+		require.NoError(t, queue.Add(&wire.DatagramFrame{Data: []byte("close"), SendOwner: owner}))
+	}
+	queue.CloseWithError(assert.AnError)
+	for _, owner := range owners {
+		require.EqualValues(t, 1, owner.count())
+	}
+}
+
 func TestDatagramQueueSendQueueLength(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		queue := newDatagramQueue(func() {}, utils.DefaultLogger)

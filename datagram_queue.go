@@ -95,6 +95,13 @@ func (h *datagramQueue) Add(f *wire.DatagramFrame) error {
 	h.sendMx.Lock()
 
 	for {
+		select {
+		case <-h.closed:
+			err := h.closeErr
+			h.sendMx.Unlock()
+			return err
+		default:
+		}
 		if h.sendQueue.Len() < maxDatagramSendQueueLen {
 			h.sendQueue.PushBack(f)
 			h.sendMx.Unlock()
@@ -133,6 +140,21 @@ func (h *datagramQueue) Pop() {
 	select {
 	case h.sent <- struct{}{}:
 	default:
+	}
+}
+
+// Drop removes the front frame without giving the packet packer ownership.
+// This is used for frames that won't be serialized.
+func (h *datagramQueue) Drop() {
+	h.sendMx.Lock()
+	f := h.sendQueue.PopFront()
+	select {
+	case h.sent <- struct{}{}:
+	default:
+	}
+	h.sendMx.Unlock()
+	if f != nil {
+		f.ReleaseSendOwner()
 	}
 }
 
@@ -217,7 +239,17 @@ func (h *datagramQueue) ReceiveBuffer(ctx context.Context) (*DatagramBuffer, err
 }
 
 func (h *datagramQueue) CloseWithError(e error) {
+	h.sendMx.Lock()
 	h.closeErr = e
+	for !h.sendQueue.Empty() {
+		h.sendQueue.PopFront().ReleaseSendOwner()
+	}
+	select {
+	case <-h.closed:
+		h.sendMx.Unlock()
+		return
+	default:
+	}
 	h.rcvMx.Lock()
 	for _, b := range h.rcvQueue {
 		b.Release()
@@ -225,4 +257,5 @@ func (h *datagramQueue) CloseWithError(e error) {
 	h.rcvQueue = nil
 	h.rcvMx.Unlock()
 	close(h.closed)
+	h.sendMx.Unlock()
 }

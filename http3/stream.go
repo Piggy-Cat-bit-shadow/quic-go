@@ -163,6 +163,25 @@ func (s *Stream) SendDatagramBuffer(buf []byte, offset, length int) error {
 	return s.SendDatagram(buf[offset : offset+length])
 }
 
+// SendDatagramBufferOwned forwards an explicitly owned buffer without copying
+// it. A nil error transfers ownership to the QUIC connection; on error the
+// caller retains ownership.
+func (s *Stream) SendDatagramBufferOwned(buf []byte, offset, length int, owner quic.DatagramPayloadOwner) error {
+	if sender, ok := s.datagramStream.(interface {
+		SendDatagramBufferOwned([]byte, int, int, quic.DatagramPayloadOwner) error
+	}); ok {
+		return sender.SendDatagramBufferOwned(buf, offset, length, owner)
+	}
+	if offset < 0 || length < 0 || offset > len(buf) || length > len(buf)-offset {
+		return fmt.Errorf("invalid datagram buffer range: offset=%d length=%d buffer=%d", offset, length, len(buf))
+	}
+	err := s.SendDatagram(buf[offset : offset+length])
+	if err == nil && owner != nil {
+		owner.Release()
+	}
+	return err
+}
+
 func (s *Stream) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	// TODO: reject if datagrams are not negotiated (yet)
 	return s.datagramStream.ReceiveDatagram(ctx)
@@ -302,6 +321,10 @@ func (s *RequestStream) SendDatagram(b []byte) error {
 
 func (s *RequestStream) SendDatagramBuffer(buf []byte, offset, length int) error {
 	return s.str.SendDatagramBuffer(buf, offset, length)
+}
+
+func (s *RequestStream) SendDatagramBufferOwned(buf []byte, offset, length int, owner quic.DatagramPayloadOwner) error {
+	return s.str.SendDatagramBufferOwned(buf, offset, length, owner)
 }
 
 // ReceiveDatagram receives HTTP Datagrams (RFC 9297).

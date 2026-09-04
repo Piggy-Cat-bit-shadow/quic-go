@@ -67,10 +67,11 @@ type alarmTimer struct {
 }
 
 type sentPacketHandler struct {
-	initialPackets   *packetNumberSpace
-	handshakePackets *packetNumberSpace
-	appDataPackets   *packetNumberSpace
-	lostPackets      lostPacketTracker // only for application-data packet number space
+	initialMaxDatagramSize protocol.ByteCount
+	initialPackets         *packetNumberSpace
+	handshakePackets       *packetNumberSpace
+	appDataPackets         *packetNumberSpace
+	lostPackets            lostPacketTracker // only for application-data packet number space
 	// send time of the largest acknowledged packet, across all packet number spaces
 	largestAckedTime monotime.Time
 
@@ -144,6 +145,7 @@ func NewSentPacketHandler(
 	)
 
 	h := &sentPacketHandler{
+		initialMaxDatagramSize:         initialMaxDatagramSize,
 		peerCompletedAddressValidation: pers == protocol.PerspectiveServer,
 		peerAddressValidated:           pers == protocol.PerspectiveClient || clientAddressValidated,
 		initialPackets:                 newPacketNumberSpace(initialPN, false),
@@ -1217,5 +1219,13 @@ func (h *sentPacketHandler) SetCongestionControl(cc congestionExt.CongestionCont
 	} else {
 		h.congestion = &ccAdapter{cc}
 	}
+	h.congestionMutex.Unlock()
+}
+
+func (h *sentPacketHandler) SetCubicCongestionControl() {
+	h.congestionMutex.Lock()
+	h.congestion = congestion.NewCubicSender(
+		congestion.DefaultClock{}, h.rttStats, h.connStats, h.initialMaxDatagramSize, false, h.qlogger,
+	)
 	h.congestionMutex.Unlock()
 }

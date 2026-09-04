@@ -578,6 +578,18 @@ func (mr *MockSentPacketHandlerMockRecorder) SetCongestionControl(arg0 interface
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetCongestionControl", reflect.TypeOf((*MockSentPacketHandler)(nil).SetCongestionControl), arg0)
 }
 
+// SetCubicCongestionControl mocks base method.
+func (m *MockSentPacketHandler) SetCubicCongestionControl() {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetCubicCongestionControl")
+}
+
+// SetCubicCongestionControl indicates an expected call of SetCubicCongestionControl.
+func (mr *MockSentPacketHandlerMockRecorder) SetCubicCongestionControl() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetCubicCongestionControl", reflect.TypeOf((*MockSentPacketHandler)(nil).SetCubicCongestionControl))
+}
+
 // SetHandshakeConfirmed mocks base method.
 func (m *MockSentPacketHandler) SetHandshakeConfirmed() {
 	m.ctrl.T.Helper()

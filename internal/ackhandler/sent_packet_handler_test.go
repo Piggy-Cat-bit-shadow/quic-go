@@ -5,6 +5,7 @@ import (
 	"fmt"
 	rand "github.com/metacubex/randv2"
 	"golang.org/x/exp/slices"
+	"reflect"
 	"testing"
 	"time"
 
@@ -160,6 +161,17 @@ func testSentPacketHandlerSendAndAcknowledge(t *testing.T, encLevel protocol.Enc
 	)
 	require.ErrorIs(t, err, &qerr.TransportError{ErrorCode: qerr.ProtocolViolation})
 	require.ErrorContains(t, err, "received ACK for an unsent packet")
+}
+
+func TestSetCubicCongestionControl(t *testing.T) {
+	h := NewSentPacketHandler(
+		0, 1200, utils.NewRTTStats(), &utils.ConnectionStats{}, false, false, nil,
+		protocol.PerspectiveServer, nil, utils.DefaultLogger,
+	).(*sentPacketHandler)
+	h.SetCubicCongestionControl()
+	if got := reflect.TypeOf(h.getCongestionControl()).String(); got != "*congestion.cubicSender" {
+		t.Fatalf("congestion control = %s, want native cubic sender", got)
+	}
 }
 
 func TestSentPacketHandlerAcknowledgeSkippedPacket(t *testing.T) {

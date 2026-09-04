@@ -3167,6 +3167,13 @@ func (c *Conn) SetCongestionControl(cc congestion.CongestionControl) {
 	c.sentPacketHandler.SetCongestionControl(cc)
 }
 
+// SetCubicCongestionControl replaces the active controller with quic-go's
+// native CUBIC implementation. It is safe to call once after a connection has
+// been accepted and before application data is sent.
+func (c *Conn) SetCubicCongestionControl() {
+	c.sentPacketHandler.SetCubicCongestionControl()
+}
+
 // SetRemoteAddr Replace the current remote addr with a new one
 func (c *Conn) SetRemoteAddr(addr net.Addr) {
 	c.conn.SetRemoteAddr(addr)

@@ -39,4 +39,5 @@ type SentPacketHandler interface {
 	MigratedPath(now monotime.Time, initialMaxPacketSize protocol.ByteCount)
 
 	SetCongestionControl(congestion.CongestionControl)
+	SetCubicCongestionControl()
 }

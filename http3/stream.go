@@ -153,6 +153,19 @@ func (s *Stream) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	return s.datagramStream.ReceiveDatagram(ctx)
 }
 
+func (s *Stream) ReceiveDatagramBuffer(ctx context.Context) (*quic.DatagramBuffer, error) {
+	if b, ok := s.datagramStream.(interface {
+		ReceiveDatagramBuffer(context.Context) (*quic.DatagramBuffer, error)
+	}); ok {
+		return b.ReceiveDatagramBuffer(ctx)
+	}
+	data, err := s.ReceiveDatagram(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &quic.DatagramBuffer{Data: data}, nil
+}
+
 // A RequestStream is a low-level abstraction representing an HTTP/3 request stream.
 // It decouples sending of the HTTP request from reading the HTTP response, allowing
 // the application to optimistically use the stream (and, for example, send datagrams)
@@ -278,6 +291,10 @@ func (s *RequestStream) SendDatagram(b []byte) error {
 // option on the [Transport].
 func (s *RequestStream) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	return s.str.ReceiveDatagram(ctx)
+}
+
+func (s *RequestStream) ReceiveDatagramBuffer(ctx context.Context) (*quic.DatagramBuffer, error) {
+	return s.str.ReceiveDatagramBuffer(ctx)
 }
 
 // SendRequestHeader sends the HTTP request.

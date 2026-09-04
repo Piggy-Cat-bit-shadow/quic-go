@@ -17,6 +17,9 @@ var MaxDatagramSize protocol.ByteCount = 16383
 type DatagramFrame struct {
 	DataLenPresent bool
 	Data           []byte
+	// DataOwner is set only by the QUIC borrowed receive path. It is kept as
+	// an interface to avoid coupling the wire parser to packetBuffer.
+	DataOwner interface{ Release() }
 }
 
 func parseDatagramFrame(b []byte, typ FrameType, _ protocol.Version) (*DatagramFrame, int, error) {
@@ -41,6 +44,28 @@ func parseDatagramFrame(b []byte, typ FrameType, _ protocol.Version) (*DatagramF
 	}
 	f.Data = make([]byte, length)
 	copy(f.Data, b)
+	return f, startLen - len(b) + int(length), nil
+}
+
+func parseDatagramFrameBorrowed(b []byte, typ FrameType, _ protocol.Version) (*DatagramFrame, int, error) {
+	startLen := len(b)
+	f := &DatagramFrame{DataLenPresent: uint64(typ)&0x1 > 0}
+	var length uint64
+	if f.DataLenPresent {
+		var l int
+		var err error
+		length, l, err = quicvarint.Parse(b)
+		if err != nil {
+			return nil, 0, replaceUnexpectedEOF(err)
+		}
+		b = b[l:]
+		if length > uint64(len(b)) {
+			return nil, 0, io.EOF
+		}
+	} else {
+		length = uint64(len(b))
+	}
+	f.Data = b[:length]
 	return f, startLen - len(b) + int(length), nil
 }
 

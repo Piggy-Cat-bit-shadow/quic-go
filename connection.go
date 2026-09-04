@@ -1261,7 +1261,7 @@ func (c *Conn) handleShortHeaderPacket(
 			})
 		}
 	}
-	isNonProbing, pathChallenge, err := c.handleUnpackedShortHeaderPacket(destConnID, pn, data, p.ecn, p.rcvTime, log)
+	isNonProbing, pathChallenge, err := c.handleUnpackedShortHeaderPacket(destConnID, pn, data, p.ecn, p.rcvTime, log, p.buffer)
 	if err != nil {
 		return false, err
 	}
@@ -1395,7 +1395,7 @@ func (c *Conn) handleLongHeaderPacket(p receivedPacket, hdr *wire.Header, datagr
 		return false, nil
 	}
 
-	if err := c.handleUnpackedLongHeaderPacket(packet, p.ecn, p.rcvTime, datagramPayloadChecksum, p.Size()); err != nil {
+	if err := c.handleUnpackedLongHeaderPacket(packet, p.ecn, p.rcvTime, datagramPayloadChecksum, p.Size(), p.buffer); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -1658,6 +1658,7 @@ func (c *Conn) handleUnpackedLongHeaderPacket(
 	rcvTime monotime.Time,
 	datagramPayloadChecksum qlog.DatagramPayloadChecksum, // only for logging
 	packetSize protocol.ByteCount, // only for logging
+	buffer *packetBuffer,
 ) error {
 	if !c.receivedFirstPacket {
 		c.receivedFirstPacket = true
@@ -1748,7 +1749,7 @@ func (c *Conn) handleUnpackedLongHeaderPacket(
 			})
 		}
 	}
-	isAckEliciting, _, _, err := c.handleFrames(packet.data, packet.hdr.DestConnectionID, packet.encryptionLevel, log, rcvTime)
+	isAckEliciting, _, _, err := c.handleFrames(packet.data, packet.hdr.DestConnectionID, packet.encryptionLevel, log, rcvTime, buffer)
 	if err != nil {
 		return err
 	}
@@ -1763,12 +1764,13 @@ func (c *Conn) handleUnpackedShortHeaderPacket(
 	ecn protocol.ECN,
 	rcvTime monotime.Time,
 	log func([]qlog.Frame),
+	buffer *packetBuffer,
 ) (isNonProbing bool, pathChallenge *wire.PathChallengeFrame, _ error) {
 	c.lastPacketReceivedTime = rcvTime
 	c.firstAckElicitingPacketAfterIdleSentTime = 0
 	c.keepAlivePingSent = false
 
-	isAckEliciting, isNonProbing, pathChallenge, err := c.handleFrames(data, destConnID, protocol.Encryption1RTT, log, rcvTime)
+	isAckEliciting, isNonProbing, pathChallenge, err := c.handleFrames(data, destConnID, protocol.Encryption1RTT, log, rcvTime, buffer)
 	if err != nil {
 		return false, nil, err
 	}
@@ -1787,6 +1789,7 @@ func (c *Conn) handleFrames(
 	encLevel protocol.EncryptionLevel,
 	log func([]qlog.Frame),
 	rcvTime monotime.Time,
+	buffer *packetBuffer,
 ) (isAckEliciting, isNonProbing bool, pathChallenge *wire.PathChallengeFrame, _ error) {
 	// Only used for tracing.
 	// If we're not tracing, this slice will always remain empty.
@@ -1851,7 +1854,13 @@ func (c *Conn) handleFrames(
 			wire.LogFrame(c.logger, ackFrame, false)
 			handleErr = c.handleAckFrame(ackFrame, encLevel, rcvTime)
 		} else if frameType.IsDatagramFrameType() {
-			datagramFrame, l, err := c.frameParser.ParseDatagramFrame(frameType, data, c.version)
+			var datagramFrame *wire.DatagramFrame
+			var l int
+			if buffer == nil {
+				datagramFrame, l, err = c.frameParser.ParseDatagramFrame(frameType, data, c.version)
+			} else {
+				datagramFrame, l, err = c.frameParser.ParseDatagramFrameBorrowed(frameType, data, c.version)
+			}
 			if err != nil {
 				return false, false, nil, err
 			}
@@ -1865,6 +1874,9 @@ func (c *Conn) handleFrames(
 				continue
 			}
 			wire.LogFrame(c.logger, datagramFrame, false)
+			if buffer != nil {
+				datagramFrame.DataOwner = c.retainDatagramBuffer(buffer)
+			}
 			handleErr = c.handleDatagramFrame(datagramFrame)
 		} else {
 			frame, l, err := c.frameParser.ParseLessCommonFrame(frameType, data, c.version)
@@ -2149,6 +2161,11 @@ func (c *Conn) handleAckFrame(frame *wire.AckFrame, encLevel protocol.Encryption
 		}
 	}
 	return c.cryptoStreamHandler.SetLargest1RTTAcked(frame.LargestAcked())
+}
+
+func (c *Conn) retainDatagramBuffer(b *packetBuffer) interface{ Release() } {
+	b.Retain()
+	return &retainedPacketBuffer{buffer: b}
 }
 
 func (c *Conn) handleDatagramFrame(f *wire.DatagramFrame) error {
@@ -3058,10 +3075,20 @@ func (c *Conn) SendDatagram(p []byte) error {
 
 // ReceiveDatagram gets a message received in a QUIC datagram, as specified in RFC 9221.
 func (c *Conn) ReceiveDatagram(ctx context.Context) ([]byte, error) {
+	b, err := c.ReceiveDatagramBuffer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	data := append([]byte(nil), b.Data...)
+	b.Release()
+	return data, nil
+}
+
+func (c *Conn) ReceiveDatagramBuffer(ctx context.Context) (*DatagramBuffer, error) {
 	if !c.config.EnableDatagrams {
 		return nil, errors.New("datagram support disabled")
 	}
-	return c.datagramQueue.Receive(ctx)
+	return c.datagramQueue.ReceiveBuffer(ctx)
 }
 
 // LocalAddr returns the local address of the QUIC connection.

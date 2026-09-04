@@ -3,6 +3,7 @@ package quic
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 
 	"github.com/metacubex/quic-go/internal/utils"
 	"github.com/metacubex/quic-go/internal/utils/ringbuffer"
@@ -20,7 +21,7 @@ type datagramQueue struct {
 	sent      chan struct{} // used to notify Add that a datagram was dequeued
 
 	rcvMx    sync.Mutex
-	rcvQueue [][]byte
+	rcvQueue []*DatagramBuffer
 	rcvd     chan struct{} // used to notify Receive that a new datagram was received
 
 	closeErr error
@@ -92,12 +93,13 @@ func (h *datagramQueue) Pop() {
 // HandleDatagramFrame handles a received DATAGRAM frame.
 func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
 	var queued bool
+	b := &DatagramBuffer{Data: f.Data, owner: f.DataOwner}
 	h.rcvMx.Lock()
 	if len(h.rcvQueue) < maxDatagramRcvQueueLen {
 		// DatagramFrame.Data is an owned parser allocation. Transfer that
 		// ownership into the receive queue; the parser has already detached it
 		// from the decrypted packet buffer.
-		h.rcvQueue = append(h.rcvQueue, f.Data)
+		h.rcvQueue = append(h.rcvQueue, b)
 		queued = true
 		select {
 		case h.rcvd <- struct{}{}:
@@ -106,12 +108,35 @@ func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
 	}
 	h.rcvMx.Unlock()
 	if !queued && h.logger.Debug() {
+		b.Release()
 		h.logger.Debugf("Discarding received DATAGRAM frame (%d bytes payload)", len(f.Data))
+	}
+}
+
+type DatagramBuffer struct {
+	Data     []byte
+	owner    interface{ Release() }
+	released atomic.Bool
+}
+
+func (b *DatagramBuffer) Release() {
+	if b != nil && b.released.CompareAndSwap(false, true) && b.owner != nil {
+		b.owner.Release()
 	}
 }
 
 // Receive gets a received DATAGRAM frame.
 func (h *datagramQueue) Receive(ctx context.Context) ([]byte, error) {
+	b, err := h.ReceiveBuffer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	data := append([]byte(nil), b.Data...)
+	b.Release()
+	return data, nil
+}
+
+func (h *datagramQueue) ReceiveBuffer(ctx context.Context) (*DatagramBuffer, error) {
 	for {
 		h.rcvMx.Lock()
 		if len(h.rcvQueue) > 0 {
@@ -134,5 +159,11 @@ func (h *datagramQueue) Receive(ctx context.Context) ([]byte, error) {
 
 func (h *datagramQueue) CloseWithError(e error) {
 	h.closeErr = e
+	h.rcvMx.Lock()
+	for _, b := range h.rcvQueue {
+		b.Release()
+	}
+	h.rcvQueue = nil
+	h.rcvMx.Unlock()
 	close(h.closed)
 }

@@ -24,7 +24,7 @@ type stateTrackingStream struct {
 
 	sendDatagram func([]byte) error
 	hasData      chan struct{}
-	queue        [][]byte // TODO: use a ring buffer
+	queue        []*quic.DatagramBuffer // TODO: use a ring buffer
 
 	mx      sync.Mutex
 	sendErr error
@@ -79,6 +79,10 @@ func (s *stateTrackingStream) closeReceive(e error) {
 			s.clearer.clearStream(s.StreamID())
 		}
 		s.recvErr = e
+		for _, b := range s.queue {
+			b.Release()
+		}
+		s.queue = nil
 		s.signalHasDatagram()
 	}
 }
@@ -133,13 +137,19 @@ func (s *stateTrackingStream) signalHasDatagram() {
 }
 
 func (s *stateTrackingStream) enqueueDatagram(data []byte) {
+	s.enqueueDatagramBuffer(&quic.DatagramBuffer{Data: data})
+}
+
+func (s *stateTrackingStream) enqueueDatagramBuffer(data *quic.DatagramBuffer) {
 	s.mx.Lock()
 	defer s.mx.Unlock()
 
 	if s.recvErr != nil {
+		data.Release()
 		return
 	}
 	if len(s.queue) >= streamDatagramQueueLen {
+		data.Release()
 		return
 	}
 	s.queue = append(s.queue, data)
@@ -147,6 +157,16 @@ func (s *stateTrackingStream) enqueueDatagram(data []byte) {
 }
 
 func (s *stateTrackingStream) ReceiveDatagram(ctx context.Context) ([]byte, error) {
+	b, err := s.ReceiveDatagramBuffer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	data := append([]byte(nil), b.Data...)
+	b.Release()
+	return data, nil
+}
+
+func (s *stateTrackingStream) ReceiveDatagramBuffer(ctx context.Context) (*quic.DatagramBuffer, error) {
 start:
 	s.mx.Lock()
 	if len(s.queue) > 0 {

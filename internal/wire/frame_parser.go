@@ -117,6 +117,14 @@ func (p *FrameParser) ParseDatagramFrame(frameType FrameType, data []byte, v pro
 	return f, l, nil
 }
 
+func (p *FrameParser) ParseDatagramFrameBorrowed(frameType FrameType, data []byte, v protocol.Version) (*DatagramFrame, int, error) {
+	f, l, err := parseDatagramFrameBorrowed(data, frameType, v)
+	if err != nil {
+		return nil, 0, &qerr.TransportError{ErrorCode: qerr.FrameEncodingError, FrameType: uint64(frameType), ErrorMessage: err.Error()}
+	}
+	return f, l, nil
+}
+
 // ParseLessCommonFrame parses everything except STREAM, ACK or DATAGRAM.
 // These cases should be handled separately for performance reasons.
 func (p *FrameParser) ParseLessCommonFrame(frameType FrameType, data []byte, v protocol.Version) (Frame, int, error) {

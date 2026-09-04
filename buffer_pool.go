@@ -2,6 +2,7 @@ package quic
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/metacubex/quic-go/internal/protocol"
 )
@@ -12,21 +13,34 @@ type packetBuffer struct {
 	// refCount counts how many packets Data is used in.
 	// It doesn't support concurrent use.
 	// It is > 1 when used for coalesced packet.
-	refCount int
+	refCount atomic.Int32
 }
 
 // Split increases the refCount.
 // It must be called when a packet buffer is used for more than one packet,
 // e.g. when splitting coalesced packets.
 func (b *packetBuffer) Split() {
-	b.refCount++
+	b.refCount.Add(1)
+}
+
+func (b *packetBuffer) Retain() { b.Split() }
+
+type retainedPacketBuffer struct {
+	buffer *packetBuffer
+	once   atomic.Bool
+}
+
+func (r *retainedPacketBuffer) Release() {
+	if r != nil && r.once.CompareAndSwap(false, true) {
+		r.buffer.Decrement()
+		r.buffer.MaybeRelease()
+	}
 }
 
 // Decrement decrements the reference counter.
 // It doesn't put the buffer back into the pool.
 func (b *packetBuffer) Decrement() {
-	b.refCount--
-	if b.refCount < 0 {
+	if b.refCount.Add(-1) < 0 {
 		panic("negative packetBuffer refCount")
 	}
 }
@@ -35,7 +49,7 @@ func (b *packetBuffer) Decrement() {
 // if the reference counter already reached 0.
 func (b *packetBuffer) MaybeRelease() {
 	// only put the packetBuffer back if it's not used any more
-	if b.refCount == 0 {
+	if b.refCount.Load() == 0 {
 		b.putBack()
 	}
 }
@@ -44,7 +58,7 @@ func (b *packetBuffer) MaybeRelease() {
 // It should be called when processing is definitely finished.
 func (b *packetBuffer) Release() {
 	b.Decrement()
-	if b.refCount != 0 {
+	if b.refCount.Load() != 0 {
 		panic("packetBuffer refCount not zero")
 	}
 	b.putBack()
@@ -70,14 +84,14 @@ var bufferPool, largeBufferPool sync.Pool
 
 func getPacketBuffer() *packetBuffer {
 	buf := bufferPool.Get().(*packetBuffer)
-	buf.refCount = 1
+	buf.refCount.Store(1)
 	buf.Data = buf.Data[:0]
 	return buf
 }
 
 func getLargePacketBuffer() *packetBuffer {
 	buf := largeBufferPool.Get().(*packetBuffer)
-	buf.refCount = 1
+	buf.refCount.Store(1)
 	buf.Data = buf.Data[:0]
 	return buf
 }

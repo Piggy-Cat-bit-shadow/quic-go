@@ -270,12 +270,13 @@ func (c *rawConn) sendDatagram(streamID quic.StreamID, b []byte) error {
 
 func (c *rawConn) receiveDatagrams() error {
 	for {
-		b, err := c.conn.ReceiveDatagram(context.Background())
+		b, err := c.conn.ReceiveDatagramBuffer(context.Background())
 		if err != nil {
 			return err
 		}
-		quarterStreamID, n, err := quicvarint.Parse(b)
+		quarterStreamID, n, err := quicvarint.Parse(b.Data)
 		if err != nil {
+			b.Release()
 			c.CloseWithError(quic.ApplicationErrorCode(ErrCodeDatagramError), "")
 			return fmt.Errorf("could not read quarter stream id: %w", err)
 		}
@@ -283,12 +284,13 @@ func (c *rawConn) receiveDatagrams() error {
 			c.qlogger.RecordEvent(qlog.DatagramParsed{
 				QuarterStreamID: quarterStreamID,
 				Raw: qlog.RawInfo{
-					Length:        len(b),
-					PayloadLength: len(b) - n,
+					Length:        len(b.Data),
+					PayloadLength: len(b.Data) - n,
 				},
 			})
 		}
 		if quarterStreamID > maxQuarterStreamID {
+			b.Release()
 			c.CloseWithError(quic.ApplicationErrorCode(ErrCodeDatagramError), "")
 			return fmt.Errorf("invalid quarter stream id: %w", err)
 		}
@@ -297,9 +299,11 @@ func (c *rawConn) receiveDatagrams() error {
 		dg, ok := c.streams[streamID]
 		c.streamMx.Unlock()
 		if !ok {
+			b.Release()
 			continue
 		}
-		dg.enqueueDatagram(b[n:])
+		b.Data = b.Data[n:]
+		dg.enqueueDatagramBuffer(b)
 	}
 }
 

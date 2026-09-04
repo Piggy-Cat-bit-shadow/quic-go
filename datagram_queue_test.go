@@ -91,11 +91,11 @@ func TestDatagramQueueTransfersFrameDataOwnership(t *testing.T) {
 	data := []byte("owned datagram")
 	frame := &wire.DatagramFrame{Data: data}
 	queue.HandleDatagramFrame(frame)
-	received, err := queue.Receive(context.Background())
+	received, err := queue.ReceiveBuffer(context.Background())
 	require.NoError(t, err)
 	require.NotEmpty(t, received)
-	require.True(t, &received[0] == &data[0], "receive queue made a duplicate payload allocation")
-	received[0] = 'O'
+	require.True(t, &received.Data[0] == &data[0], "receive queue made a duplicate payload allocation")
+	received.Data[0] = 'O'
 	require.Equal(t, byte('O'), data[0])
 }
 

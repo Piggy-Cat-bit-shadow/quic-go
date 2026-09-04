@@ -331,3 +331,22 @@ func TestDatagramSending(t *testing.T) {
 	str.closeSend(net.ErrClosed)
 	require.ErrorIs(t, str.SendDatagram([]byte("foobar")), net.ErrClosed)
 }
+
+func TestStateTrackingStreamSendDatagramBufferForwardsHeadroom(t *testing.T) {
+	client, _ := newStreamPair(t)
+	var clearer mockStreamClearer
+	str := newStateTrackingStream(client, &clearer, func([]byte) error { return nil })
+	var gotBuf []byte
+	var gotOffset, gotLength int
+	str.sendDatagramBuffer = func(buf []byte, offset, length int) error {
+		gotBuf, gotOffset, gotLength = buf, offset, length
+		return nil
+	}
+
+	buf := make([]byte, 8+4)
+	copy(buf[8:], []byte("data"))
+	require.NoError(t, str.SendDatagramBuffer(buf, 8, 4))
+	require.Equal(t, &buf[0], &gotBuf[0])
+	require.Equal(t, 8, gotOffset)
+	require.Equal(t, 4, gotLength)
+}

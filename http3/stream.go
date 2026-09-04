@@ -148,6 +148,21 @@ func (s *Stream) SendDatagram(b []byte) error {
 	return s.datagramStream.SendDatagram(b)
 }
 
+// SendDatagramBuffer sends buf[offset:offset+length] as an HTTP Datagram.
+// When the underlying stream supports headroom, the HTTP/3 quarter-stream ID
+// is prepended in place. Callers must retain ownership until this call returns.
+func (s *Stream) SendDatagramBuffer(buf []byte, offset, length int) error {
+	if b, ok := s.datagramStream.(interface {
+		SendDatagramBuffer([]byte, int, int) error
+	}); ok {
+		return b.SendDatagramBuffer(buf, offset, length)
+	}
+	if offset < 0 || length < 0 || offset > len(buf) || length > len(buf)-offset {
+		return fmt.Errorf("invalid datagram buffer range: offset=%d length=%d buffer=%d", offset, length, len(buf))
+	}
+	return s.SendDatagram(buf[offset : offset+length])
+}
+
 func (s *Stream) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	// TODO: reject if datagrams are not negotiated (yet)
 	return s.datagramStream.ReceiveDatagram(ctx)
@@ -283,6 +298,10 @@ func (s *RequestStream) SetDeadline(t time.Time) error {
 // as the server might drop datagrams which it can't associate with an existing request.
 func (s *RequestStream) SendDatagram(b []byte) error {
 	return s.str.SendDatagram(b)
+}
+
+func (s *RequestStream) SendDatagramBuffer(buf []byte, offset, length int) error {
+	return s.str.SendDatagramBuffer(buf, offset, length)
 }
 
 // ReceiveDatagram receives HTTP Datagrams (RFC 9297).

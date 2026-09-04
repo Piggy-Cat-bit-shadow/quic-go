@@ -3,6 +3,7 @@ package http3
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sync"
 
@@ -22,9 +23,10 @@ const streamDatagramQueueLen = 32
 type stateTrackingStream struct {
 	*quic.Stream
 
-	sendDatagram func([]byte) error
-	hasData      chan struct{}
-	queue        []*quic.DatagramBuffer // TODO: use a ring buffer
+	sendDatagram       func([]byte) error
+	sendDatagramBuffer func([]byte, int, int) error
+	hasData            chan struct{}
+	queue              []*quic.DatagramBuffer // TODO: use a ring buffer
 
 	mx      sync.Mutex
 	sendErr error
@@ -127,6 +129,22 @@ func (s *stateTrackingStream) SendDatagram(b []byte) error {
 	}
 
 	return s.sendDatagram(b)
+}
+
+func (s *stateTrackingStream) SendDatagramBuffer(buf []byte, offset, length int) error {
+	s.mx.Lock()
+	sendErr := s.sendErr
+	s.mx.Unlock()
+	if sendErr != nil {
+		return sendErr
+	}
+	if offset < 0 || length < 0 || offset > len(buf) || length > len(buf)-offset {
+		return fmt.Errorf("invalid datagram buffer range: offset=%d length=%d buffer=%d", offset, length, len(buf))
+	}
+	if s.sendDatagramBuffer != nil {
+		return s.sendDatagramBuffer(buf, offset, length)
+	}
+	return s.sendDatagram(buf[offset : offset+length])
 }
 
 func (s *stateTrackingStream) signalHasDatagram() {

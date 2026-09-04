@@ -116,6 +116,9 @@ func (c *rawConn) openControlStream(settings *settingsFrame) (*quic.SendStream, 
 
 func (c *rawConn) TrackStream(str *quic.Stream) *stateTrackingStream {
 	hstr := newStateTrackingStream(str, c, func(b []byte) error { return c.sendDatagram(str.StreamID(), b) })
+	hstr.sendDatagramBuffer = func(buf []byte, offset, length int) error {
+		return c.sendDatagramBuffer(str.StreamID(), buf, offset, length)
+	}
 
 	c.streamMx.Lock()
 	c.streams[str.StreamID()] = hstr
@@ -251,7 +254,6 @@ func (c *rawConn) handleControlStream(str *quic.ReceiveStream) {
 }
 
 func (c *rawConn) sendDatagram(streamID quic.StreamID, b []byte) error {
-	// TODO: this creates a lot of garbage and an additional copy
 	data := make([]byte, 0, len(b)+8)
 	quarterStreamID := uint64(streamID / 4)
 	data = quicvarint.Append(data, uint64(streamID/4))
@@ -262,6 +264,34 @@ func (c *rawConn) sendDatagram(streamID quic.StreamID, b []byte) error {
 			Raw: qlog.RawInfo{
 				Length:        len(data),
 				PayloadLength: len(b),
+			},
+		})
+	}
+	return c.conn.SendDatagram(data)
+}
+
+func (c *rawConn) sendDatagramBuffer(streamID quic.StreamID, buf []byte, offset, length int) error {
+	if offset < 0 || length < 0 || offset > len(buf) || length > len(buf)-offset {
+		return fmt.Errorf("invalid datagram buffer range: offset=%d length=%d buffer=%d", offset, length, len(buf))
+	}
+	payload := buf[offset : offset+length]
+	quarterStreamID := uint64(streamID / 4)
+	var encoded [8]byte
+	prefix := quicvarint.Append(encoded[:0], quarterStreamID)
+	if offset < len(prefix) {
+		// Callers without enough headroom remain compatible, but use the
+		// legacy allocating path rather than risking an overwrite.
+		return c.sendDatagram(streamID, payload)
+	}
+	start := offset - len(prefix)
+	copy(buf[start:offset], prefix)
+	data := buf[start : offset+length]
+	if c.qlogger != nil {
+		c.qlogger.RecordEvent(qlog.DatagramCreated{
+			QuarterStreamID: quarterStreamID,
+			Raw: qlog.RawInfo{
+				Length:        len(data),
+				PayloadLength: len(payload),
 			},
 		})
 	}

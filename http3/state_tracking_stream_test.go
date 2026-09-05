@@ -2,6 +2,7 @@ package http3
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -13,6 +14,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type testDatagramPayloadOwner struct {
+	releases int
+}
+
+func (o *testDatagramPayloadOwner) Release() { o.releases++ }
 
 func newStreamPair(t *testing.T) (client, server *quic.Stream) {
 	t.Helper()
@@ -49,6 +56,53 @@ func checkDatagramReceive(t *testing.T, str *stateTrackingStream) {
 func checkDatagramSend(t *testing.T, str *stateTrackingStream) {
 	t.Helper()
 	require.NoError(t, str.SendDatagram([]byte("test")))
+}
+
+func TestStateTrackingStreamSendDatagramBufferOwned(t *testing.T) {
+	client, _ := newStreamPair(t)
+	str := newStateTrackingStream(client, nil, func([]byte) error {
+		t.Fatal("legacy datagram callback used")
+		return nil
+	})
+	var called bool
+	str.sendDatagramBufferOwned = func(buf []byte, offset, length int, owner quic.DatagramPayloadOwner) error {
+		called = true
+		require.Equal(t, []byte("payload"), buf[offset:offset+length])
+		return nil
+	}
+	owner := &testDatagramPayloadOwner{}
+	hstr := &Stream{datagramStream: str}
+	require.NoError(t, hstr.SendDatagramBufferOwned([]byte("payload"), 0, 7, owner))
+	require.True(t, called)
+	require.Zero(t, owner.releases, "ownership must transfer on success")
+
+	owner.Release()
+	require.Equal(t, 1, owner.releases)
+}
+
+func TestStateTrackingStreamSendDatagramBufferOwnedFallbackReleasesOnSuccess(t *testing.T) {
+	client, _ := newStreamPair(t)
+	str := newStateTrackingStream(client, nil, func([]byte) error { return nil })
+	str.sendDatagramBuffer = func(buf []byte, offset, length int) error {
+		require.Equal(t, []byte("payload"), buf[offset:offset+length])
+		return nil
+	}
+	owner := &testDatagramPayloadOwner{}
+	require.NoError(t, str.SendDatagramBufferOwned([]byte("payload"), 0, 7, owner))
+	require.Equal(t, 1, owner.releases)
+
+	owner = &testDatagramPayloadOwner{}
+	str.sendDatagramBuffer = func([]byte, int, int) error { return errors.New("send failed") }
+	require.Error(t, str.SendDatagramBufferOwned([]byte("payload"), 0, 7, owner))
+	require.Zero(t, owner.releases, "ownership must remain with caller on error")
+}
+
+func TestStateTrackingStreamSendDatagramBufferOwnedRejectsInvalidRangeWithoutRelease(t *testing.T) {
+	client, _ := newStreamPair(t)
+	str := newStateTrackingStream(client, nil, func([]byte) error { return nil })
+	owner := &testDatagramPayloadOwner{}
+	require.Error(t, str.SendDatagramBufferOwned([]byte("payload"), 2, 6, owner))
+	require.Zero(t, owner.releases)
 }
 
 type mockStreamClearer struct {

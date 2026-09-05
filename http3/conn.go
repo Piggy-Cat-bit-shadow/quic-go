@@ -119,6 +119,9 @@ func (c *rawConn) TrackStream(str *quic.Stream) *stateTrackingStream {
 	hstr.sendDatagramBuffer = func(buf []byte, offset, length int) error {
 		return c.sendDatagramBuffer(str.StreamID(), buf, offset, length)
 	}
+	hstr.sendDatagramBufferOwned = func(buf []byte, offset, length int, owner quic.DatagramPayloadOwner) error {
+		return c.sendDatagramBufferOwned(str.StreamID(), buf, offset, length, owner)
+	}
 
 	c.streamMx.Lock()
 	c.streams[str.StreamID()] = hstr

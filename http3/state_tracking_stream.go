@@ -24,10 +24,11 @@ const streamDatagramQueueLen = 32
 type stateTrackingStream struct {
 	*quic.Stream
 
-	sendDatagram       func([]byte) error
-	sendDatagramBuffer func([]byte, int, int) error
-	hasData            chan struct{}
-	queue              ringbuffer.RingBuffer[*quic.DatagramBuffer]
+	sendDatagram            func([]byte) error
+	sendDatagramBuffer      func([]byte, int, int) error
+	sendDatagramBufferOwned func([]byte, int, int, quic.DatagramPayloadOwner) error
+	hasData                 chan struct{}
+	queue                   ringbuffer.RingBuffer[*quic.DatagramBuffer]
 
 	mx      sync.Mutex
 	sendErr error
@@ -146,6 +147,33 @@ func (s *stateTrackingStream) SendDatagramBuffer(buf []byte, offset, length int)
 		return s.sendDatagramBuffer(buf, offset, length)
 	}
 	return s.sendDatagram(buf[offset : offset+length])
+}
+
+// SendDatagramBufferOwned forwards an explicitly owned buffer. A nil error
+// transfers ownership to the lower layer; an error leaves it with the caller.
+func (s *stateTrackingStream) SendDatagramBufferOwned(buf []byte, offset, length int, owner quic.DatagramPayloadOwner) error {
+	s.mx.Lock()
+	sendErr := s.sendErr
+	s.mx.Unlock()
+	if sendErr != nil {
+		return sendErr
+	}
+	if offset < 0 || length < 0 || offset > len(buf) || length > len(buf)-offset {
+		return fmt.Errorf("invalid datagram buffer range: offset=%d length=%d buffer=%d", offset, length, len(buf))
+	}
+	if s.sendDatagramBufferOwned != nil {
+		return s.sendDatagramBufferOwned(buf, offset, length, owner)
+	}
+	var err error
+	if s.sendDatagramBuffer != nil {
+		err = s.sendDatagramBuffer(buf, offset, length)
+	} else {
+		err = s.sendDatagram(buf[offset : offset+length])
+	}
+	if err == nil && owner != nil {
+		owner.Release()
+	}
+	return err
 }
 
 func (s *stateTrackingStream) signalHasDatagram() {

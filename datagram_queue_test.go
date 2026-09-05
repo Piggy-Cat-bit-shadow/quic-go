@@ -130,6 +130,62 @@ func TestDatagramQueueReceive(t *testing.T) {
 	require.Equal(t, []byte("bar"), data)
 }
 
+func TestDatagramQueueReceiveWraparoundFIFO(t *testing.T) {
+	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
+
+	for i := 0; i < maxDatagramRcvQueueLen; i++ {
+		queue.HandleDatagramFrame(&wire.DatagramFrame{Data: []byte{byte(i)}})
+	}
+	for i := 0; i < maxDatagramRcvQueueLen/2; i++ {
+		b, err := queue.ReceiveBuffer(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, []byte{byte(i)}, b.Data)
+		b.Release()
+	}
+	for i := maxDatagramRcvQueueLen; i < maxDatagramRcvQueueLen+maxDatagramRcvQueueLen/2; i++ {
+		queue.HandleDatagramFrame(&wire.DatagramFrame{Data: []byte{byte(i)}})
+	}
+
+	for i := maxDatagramRcvQueueLen / 2; i < maxDatagramRcvQueueLen+maxDatagramRcvQueueLen/2; i++ {
+		b, err := queue.ReceiveBuffer(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, []byte{byte(i)}, b.Data)
+		b.Release()
+	}
+	require.True(t, queue.rcvQueue.Empty())
+}
+
+func TestDatagramQueueWraparoundCloseReleasesQueuedOwners(t *testing.T) {
+	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
+	for i := 0; i < maxDatagramRcvQueueLen; i++ {
+		queue.HandleDatagramFrame(&wire.DatagramFrame{Data: []byte{byte(i)}})
+	}
+	for i := 0; i < maxDatagramRcvQueueLen/2; i++ {
+		b, err := queue.ReceiveBuffer(context.Background())
+		require.NoError(t, err)
+		b.Release()
+	}
+	for i := 0; i < maxDatagramRcvQueueLen/2-3; i++ {
+		queue.HandleDatagramFrame(&wire.DatagramFrame{Data: []byte{byte(i)}})
+	}
+
+	owners := []*countingDatagramOwner{new(countingDatagramOwner), new(countingDatagramOwner), new(countingDatagramOwner)}
+	for _, owner := range owners {
+		queue.HandleDatagramFrame(&wire.DatagramFrame{Data: []byte{1}, DataOwner: owner})
+	}
+	queue.CloseWithError(assert.AnError)
+	for _, owner := range owners {
+		require.EqualValues(t, 1, owner.count())
+	}
+}
+
+func TestDatagramBufferReleaseDetachesData(t *testing.T) {
+	b := &DatagramBuffer{Data: []byte("payload")}
+	b.Release()
+	require.Nil(t, b.Data)
+	b.Release()
+}
+
 func TestDatagramQueueTransfersFrameDataOwnership(t *testing.T) {
 	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
 	data := []byte("owned datagram")

@@ -298,6 +298,28 @@ func TestDatagramReceiving(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 }
 
+func TestDatagramReceivingWraparoundFIFO(t *testing.T) {
+	client, _ := newStreamPair(t)
+	str := newStateTrackingStream(client, nil, func([]byte) error { return nil })
+
+	for i := 0; i < streamDatagramQueueLen; i++ {
+		str.enqueueDatagram([]byte{byte(i)})
+	}
+	for i := 0; i < streamDatagramQueueLen/2; i++ {
+		data, err := str.ReceiveDatagram(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, []byte{byte(i)}, data)
+	}
+	for i := streamDatagramQueueLen; i < streamDatagramQueueLen+streamDatagramQueueLen/2; i++ {
+		str.enqueueDatagram([]byte{byte(i)})
+	}
+	for i := streamDatagramQueueLen / 2; i < streamDatagramQueueLen+streamDatagramQueueLen/2; i++ {
+		data, err := str.ReceiveDatagram(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, []byte{byte(i)}, data)
+	}
+}
+
 func TestDatagramReceivingCloseDrainsQueuedDatagrams(t *testing.T) {
 	client, _ := newStreamPair(t)
 	var clearer mockStreamClearer

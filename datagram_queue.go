@@ -65,7 +65,7 @@ type datagramQueue struct {
 	sent      chan struct{} // used to notify Add that a datagram was dequeued
 
 	rcvMx    sync.Mutex
-	rcvQueue []*DatagramBuffer
+	rcvQueue ringbuffer.RingBuffer[*DatagramBuffer]
 	rcvd     chan struct{} // used to notify Receive that a new datagram was received
 	retained *datagramRetentionBudget
 
@@ -78,7 +78,7 @@ type datagramQueue struct {
 }
 
 func newDatagramQueue(hasData func(), logger utils.Logger) *datagramQueue {
-	return &datagramQueue{
+	q := &datagramQueue{
 		hasData:  hasData,
 		rcvd:     make(chan struct{}, 1),
 		sent:     make(chan struct{}, 1),
@@ -86,6 +86,9 @@ func newDatagramQueue(hasData func(), logger utils.Logger) *datagramQueue {
 		retained: new(datagramRetentionBudget),
 		logger:   logger,
 	}
+	q.sendQueue.Init(maxDatagramSendQueueLen)
+	q.rcvQueue.Init(maxDatagramRcvQueueLen)
+	return q
 }
 
 // Add queues a new DATAGRAM frame for sending.
@@ -161,7 +164,7 @@ func (h *datagramQueue) Drop() {
 // HandleDatagramFrame handles a received DATAGRAM frame.
 func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
 	h.rcvMx.Lock()
-	if len(h.rcvQueue) >= maxDatagramRcvQueueLen {
+	if h.rcvQueue.Len() >= maxDatagramRcvQueueLen {
 		h.rcvMx.Unlock()
 		if f.DataOwner != nil {
 			f.DataOwner.Release()
@@ -185,7 +188,7 @@ func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
 		}
 	}
 	b := &DatagramBuffer{Data: f.Data, owner: owner}
-	h.rcvQueue = append(h.rcvQueue, b)
+	h.rcvQueue.PushBack(b)
 	select {
 	case h.rcvd <- struct{}{}:
 	default:
@@ -201,8 +204,14 @@ type DatagramBuffer struct {
 }
 
 func (b *DatagramBuffer) Release() {
-	if b != nil && b.released.CompareAndSwap(false, true) && b.owner != nil {
-		b.owner.Release()
+	if b == nil || !b.released.CompareAndSwap(false, true) {
+		return
+	}
+	owner := b.owner
+	b.owner = nil
+	b.Data = nil
+	if owner != nil {
+		owner.Release()
 	}
 }
 
@@ -220,9 +229,8 @@ func (h *datagramQueue) Receive(ctx context.Context) ([]byte, error) {
 func (h *datagramQueue) ReceiveBuffer(ctx context.Context) (*DatagramBuffer, error) {
 	for {
 		h.rcvMx.Lock()
-		if len(h.rcvQueue) > 0 {
-			data := h.rcvQueue[0]
-			h.rcvQueue = h.rcvQueue[1:]
+		if !h.rcvQueue.Empty() {
+			data := h.rcvQueue.PopFront()
 			h.rcvMx.Unlock()
 			return data, nil
 		}
@@ -251,10 +259,9 @@ func (h *datagramQueue) CloseWithError(e error) {
 	default:
 	}
 	h.rcvMx.Lock()
-	for _, b := range h.rcvQueue {
-		b.Release()
+	for !h.rcvQueue.Empty() {
+		h.rcvQueue.PopFront().Release()
 	}
-	h.rcvQueue = nil
 	h.rcvMx.Unlock()
 	close(h.closed)
 	h.sendMx.Unlock()

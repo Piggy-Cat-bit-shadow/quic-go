@@ -9,6 +9,7 @@ import (
 
 	"github.com/metacubex/quic-go"
 	"github.com/metacubex/quic-go/internal/utils"
+	"github.com/metacubex/quic-go/internal/utils/ringbuffer"
 )
 
 const streamDatagramQueueLen = 32
@@ -26,7 +27,7 @@ type stateTrackingStream struct {
 	sendDatagram       func([]byte) error
 	sendDatagramBuffer func([]byte, int, int) error
 	hasData            chan struct{}
-	queue              []*quic.DatagramBuffer // TODO: use a ring buffer
+	queue              ringbuffer.RingBuffer[*quic.DatagramBuffer]
 
 	mx      sync.Mutex
 	sendErr error
@@ -48,6 +49,7 @@ func newStateTrackingStream(s *quic.Stream, clearer streamClearer, sendDatagram 
 		sendDatagram: sendDatagram,
 		hasData:      make(chan struct{}, 1),
 	}
+	t.queue.Init(streamDatagramQueueLen)
 
 	utils.AfterFunc(s.Context(), func() {
 		t.closeSend(context.Cause(s.Context()))
@@ -81,10 +83,9 @@ func (s *stateTrackingStream) closeReceive(e error) {
 			s.clearer.clearStream(s.StreamID())
 		}
 		s.recvErr = e
-		for _, b := range s.queue {
-			b.Release()
+		for !s.queue.Empty() {
+			s.queue.PopFront().Release()
 		}
-		s.queue = nil
 		s.signalHasDatagram()
 	}
 }
@@ -166,11 +167,11 @@ func (s *stateTrackingStream) enqueueDatagramBuffer(data *quic.DatagramBuffer) {
 		data.Release()
 		return
 	}
-	if len(s.queue) >= streamDatagramQueueLen {
+	if s.queue.Len() >= streamDatagramQueueLen {
 		data.Release()
 		return
 	}
-	s.queue = append(s.queue, data)
+	s.queue.PushBack(data)
 	s.signalHasDatagram()
 }
 
@@ -187,9 +188,8 @@ func (s *stateTrackingStream) ReceiveDatagram(ctx context.Context) ([]byte, erro
 func (s *stateTrackingStream) ReceiveDatagramBuffer(ctx context.Context) (*quic.DatagramBuffer, error) {
 start:
 	s.mx.Lock()
-	if len(s.queue) > 0 {
-		data := s.queue[0]
-		s.queue = s.queue[1:]
+	if !s.queue.Empty() {
+		data := s.queue.PopFront()
 		s.mx.Unlock()
 		return data, nil
 	}

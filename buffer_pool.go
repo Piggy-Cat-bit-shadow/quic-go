@@ -26,14 +26,15 @@ func (b *packetBuffer) Split() {
 
 func (b *packetBuffer) Retain() { b.Split() }
 
-type retainedPacketBuffer struct {
-	buffer *packetBuffer
-	once   atomic.Bool
-}
+// retainedPacketBufferRef is a named pointer view over packetBuffer. It lets a
+// retained packet reference implement the owner interface without allocating a
+// second heap object. Each view owns exactly one retained reference and must be
+// released exactly once.
+type retainedPacketBufferRef packetBuffer
 
-func (r *retainedPacketBuffer) Release() {
-	if r != nil && r.once.CompareAndSwap(false, true) {
-		r.buffer.releaseRef()
+func (r *retainedPacketBufferRef) Release() {
+	if r != nil {
+		(*packetBuffer)(r).releaseRef()
 	}
 }
 

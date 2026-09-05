@@ -54,10 +54,10 @@ func TestPacketBufferConcurrentFinalReleaseReturnsToPoolOnce(t *testing.T) {
 	for i := 0; i < rounds; i++ {
 		refs := 2 + i%7
 		buf := getPacketBuffer()
-		handles := make([]*retainedPacketBuffer, refs-1)
+		handles := make([]*retainedPacketBufferRef, refs-1)
 		for j := range handles {
 			buf.Retain()
-			handles[j] = &retainedPacketBuffer{buffer: buf}
+			handles[j] = (*retainedPacketBufferRef)(buf)
 		}
 
 		start := make(chan struct{})
@@ -69,7 +69,7 @@ func TestPacketBufferConcurrentFinalReleaseReturnsToPoolOnce(t *testing.T) {
 			buf.releaseRef() // base packet-processing reference
 		}()
 		for _, handle := range handles {
-			go func(h *retainedPacketBuffer) {
+			go func(h *retainedPacketBufferRef) {
 				defer wg.Done()
 				<-start
 				h.Release()
@@ -82,19 +82,32 @@ func TestPacketBufferConcurrentFinalReleaseReturnsToPoolOnce(t *testing.T) {
 	require.EqualValues(t, rounds, putBacks.Load())
 }
 
-func TestPacketBufferReleaseRefAndRetainedReleaseAreIdempotent(t *testing.T) {
+func TestPacketBufferReleaseRefAndRetainedRelease(t *testing.T) {
 	var putBacks atomic.Int32
 	packetBufferPutBackHook = func() { putBacks.Add(1) }
 	defer func() { packetBufferPutBackHook = nil }()
 
 	buf := getPacketBuffer()
 	buf.Retain()
-	handle := &retainedPacketBuffer{buffer: buf}
-	handle.Release()
+	handle := (*retainedPacketBufferRef)(buf)
 	handle.Release()
 	require.Zero(t, putBacks.Load(), "the base reference is still live")
 	buf.releaseRef()
 	require.EqualValues(t, 1, putBacks.Load())
+}
+
+var retainedOwnerBenchmarkSink interface{ Release() }
+
+func BenchmarkRetainDatagramBufferOwner(b *testing.B) {
+	conn := new(Conn)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf := getPacketBuffer()
+		retainedOwnerBenchmarkSink = conn.retainDatagramBuffer(buf)
+		retainedOwnerBenchmarkSink.Release()
+		buf.Release()
+	}
 }
 
 func TestPacketBufferSplitReferencesUseSingleFinalRelease(t *testing.T) {

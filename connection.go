@@ -2171,7 +2171,7 @@ func (c *Conn) handleAckFrame(frame *wire.AckFrame, encLevel protocol.Encryption
 
 func (c *Conn) retainDatagramBuffer(b *packetBuffer) interface{ Release() } {
 	b.Retain()
-	return &retainedPacketBuffer{buffer: b}
+	return (*retainedPacketBufferRef)(b)
 }
 
 func (c *Conn) handleDatagramFrame(f *wire.DatagramFrame) error {

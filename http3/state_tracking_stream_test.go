@@ -336,7 +336,8 @@ func TestDatagramReceivingCloseDrainsQueuedDatagrams(t *testing.T) {
 
 func TestTryReceiveDatagramBufferIsQueueFirstAndNonblocking(t *testing.T) {
 	client, _ := newStreamPair(t)
-	str := newStateTrackingStream(client, nil, func([]byte) error { return nil })
+	var clearer mockStreamClearer
+	str := newStateTrackingStream(client, &clearer, func([]byte) error { return nil })
 	queued := &quic.DatagramBuffer{Data: []byte("queued")}
 	str.enqueueDatagramBuffer(queued)
 

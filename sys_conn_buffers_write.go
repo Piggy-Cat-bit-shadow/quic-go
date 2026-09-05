@@ -34,7 +34,11 @@ func setSendBuffer(c net.PacketConn) error {
 	// net.PacketConn interface and the SetWriteBuffer method.
 	// We have no way of checking if increasing the buffer size actually worked.
 	if syscallConn == nil {
-		return conn.SetWriteBuffer(protocol.DesiredSendBufferSize)
+		err := conn.SetWriteBuffer(protocol.DesiredSendBufferSize)
+		if err == nil {
+			utils.DefaultLogger.Infof("QUIC UDP send buffer: requested=%d effective=unknown", protocol.DesiredSendBufferSize)
+		}
+		return err
 	}
 
 	size, err := inspectWriteBuffer(syscallConn)
@@ -42,7 +46,7 @@ func setSendBuffer(c net.PacketConn) error {
 		return fmt.Errorf("failed to determine send buffer size: %w", err)
 	}
 	if size >= protocol.DesiredSendBufferSize {
-		utils.DefaultLogger.Debugf("Conn has send buffer of %d kiB (wanted: at least %d kiB)", size/1024, protocol.DesiredSendBufferSize/1024)
+		utils.DefaultLogger.Infof("QUIC UDP send buffer: requested=%d effective=%d", protocol.DesiredSendBufferSize, size)
 		return nil
 	}
 	// Ignore the error. We check if we succeeded by querying the buffer size afterward.
@@ -65,6 +69,6 @@ func setSendBuffer(c net.PacketConn) error {
 	if newSize < protocol.DesiredSendBufferSize {
 		return fmt.Errorf("failed to sufficiently increase send buffer size (was: %d kiB, wanted: %d kiB, got: %d kiB)", size/1024, protocol.DesiredSendBufferSize/1024, newSize/1024)
 	}
-	utils.DefaultLogger.Debugf("Increased send buffer size to %d kiB", newSize/1024)
+	utils.DefaultLogger.Infof("QUIC UDP send buffer: requested=%d effective=%d", protocol.DesiredSendBufferSize, newSize)
 	return nil
 }

@@ -49,8 +49,12 @@ type OOBCapablePacketConn interface {
 var _ OOBCapablePacketConn = &net.UDPConn{}
 
 func wrapConn(pc net.PacketConn) (rawConn, error) {
-	_ = setReceiveBuffer(pc)
-	_ = setSendBuffer(pc)
+	if err := setReceiveBuffer(pc); err != nil {
+		utils.DefaultLogger.Errorf("warning: QUIC UDP receive buffer tuning failed: requested=%d reason=%v", protocol.DesiredReceiveBufferSize, err)
+	}
+	if err := setSendBuffer(pc); err != nil {
+		utils.DefaultLogger.Errorf("warning: QUIC UDP send buffer tuning failed: requested=%d reason=%v", protocol.DesiredSendBufferSize, err)
+	}
 
 	conn, ok := pc.(interface {
 		SyscallConn() (syscall.RawConn, error)

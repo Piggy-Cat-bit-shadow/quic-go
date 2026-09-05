@@ -829,6 +829,60 @@ func BenchmarkParseDatagramFrame(b *testing.B) {
 	benchmarkFrames(b, frames...)
 }
 
+func BenchmarkParseBorrowedDatagram(b *testing.B) {
+	parser := NewFrameParser(true, true, true)
+	data := make([]byte, 256)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		frame, _, err := parser.ParseDatagramFrameBorrowedReusable(FrameTypeDatagramNoLength, data, protocol.Version1)
+		if err != nil || len(frame.Data) != len(data) {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestParseDatagramFrameBorrowedReusableTransfersState(t *testing.T) {
+	parser := NewFrameParser(true, true, true)
+	owner := new(testDatagramSendOwner)
+	dataA := []byte("datagram-a")
+	frameA, _, err := parser.ParseDatagramFrameBorrowedReusable(FrameTypeDatagramNoLength, dataA, protocol.Version1)
+	require.NoError(t, err)
+	frameA.DataOwner = owner
+	frameA.SendOwner = owner
+	frameA.sendOwnerReleased.Store(true)
+	transferredData := frameA.Data
+	transferredOwner := frameA.TakeDataOwner()
+
+	dataB := []byte("datagram-b")
+	frameB, _, err := parser.ParseDatagramFrameBorrowedReusable(FrameTypeDatagramNoLength, dataB, protocol.Version1)
+	require.NoError(t, err)
+	require.Same(t, frameA, frameB)
+	require.Equal(t, dataA, transferredData)
+	require.Same(t, owner, transferredOwner)
+	require.Nil(t, frameB.DataOwner)
+	require.Nil(t, frameB.SendOwner)
+	require.False(t, frameB.sendOwnerReleased.Load())
+	transferredOwner.Release()
+}
+
+func TestParseDatagramFrameBorrowedReusableMalformedAfterTransfer(t *testing.T) {
+	parser := NewFrameParser(true, true, true)
+	owner := new(testDatagramSendOwner)
+	frame, _, err := parser.ParseDatagramFrameBorrowedReusable(FrameTypeDatagramNoLength, []byte("valid"), protocol.Version1)
+	require.NoError(t, err)
+	transferredData := frame.Data
+	transferredOwner := owner
+	frame.DataOwner = owner
+	require.Same(t, owner, frame.TakeDataOwner())
+
+	_, _, err = parser.ParseDatagramFrameBorrowedReusable(FrameTypeDatagramWithLength, []byte{5, 'x'}, protocol.Version1)
+	require.Error(t, err)
+	require.Equal(t, []byte("valid"), transferredData)
+	require.Nil(t, parser.borrowedDatagramFrame.DataOwner)
+	transferredOwner.Release()
+}
+
 func benchmarkFrames(b *testing.B, frames ...Frame) {
 	b.ReportAllocs()
 

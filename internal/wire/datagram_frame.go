@@ -40,6 +40,16 @@ func (f *DatagramFrame) ReleaseSendOwner() {
 	owner.Release()
 }
 
+// TakeDataOwner transfers the borrowed receive owner out of the frame.
+func (f *DatagramFrame) TakeDataOwner() interface{ Release() } {
+	if f == nil {
+		return nil
+	}
+	owner := f.DataOwner
+	f.DataOwner = nil
+	return owner
+}
+
 func parseDatagramFrame(b []byte, typ FrameType, _ protocol.Version) (*DatagramFrame, int, error) {
 	startLen := len(b)
 	f := &DatagramFrame{}
@@ -66,25 +76,38 @@ func parseDatagramFrame(b []byte, typ FrameType, _ protocol.Version) (*DatagramF
 }
 
 func parseDatagramFrameBorrowed(b []byte, typ FrameType, _ protocol.Version) (*DatagramFrame, int, error) {
+	f := &DatagramFrame{}
+	l, err := parseDatagramFrameBorrowedInto(f, b, typ)
+	if err != nil {
+		return nil, 0, err
+	}
+	return f, l, nil
+}
+
+func parseDatagramFrameBorrowedInto(f *DatagramFrame, b []byte, typ FrameType) (int, error) {
+	f.DataLenPresent = uint64(typ)&0x1 > 0
+	f.Data = nil
+	f.DataOwner = nil
+	f.SendOwner = nil
+	f.sendOwnerReleased.Store(false)
 	startLen := len(b)
-	f := &DatagramFrame{DataLenPresent: uint64(typ)&0x1 > 0}
 	var length uint64
 	if f.DataLenPresent {
 		var l int
 		var err error
 		length, l, err = quicvarint.Parse(b)
 		if err != nil {
-			return nil, 0, replaceUnexpectedEOF(err)
+			return 0, replaceUnexpectedEOF(err)
 		}
 		b = b[l:]
 		if length > uint64(len(b)) {
-			return nil, 0, io.EOF
+			return 0, io.EOF
 		}
 	} else {
 		length = uint64(len(b))
 	}
 	f.Data = b[:length]
-	return f, startLen - len(b) + int(length), nil
+	return startLen - len(b) + int(length), nil
 }
 
 func (f *DatagramFrame) Append(b []byte, _ protocol.Version) ([]byte, error) {

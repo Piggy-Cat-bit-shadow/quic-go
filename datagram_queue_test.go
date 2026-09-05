@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/metacubex/quic-go/internal/protocol"
 	"github.com/metacubex/quic-go/internal/utils"
 	"github.com/metacubex/quic-go/internal/wire"
 	"github.com/metacubex/quic-go/testutils/synctest"
@@ -145,6 +146,32 @@ func BenchmarkDatagramQueueBorrowedReceiveRelease(b *testing.B) {
 	}
 }
 
+func BenchmarkBorrowedDatagramParserQueueReceive(b *testing.B) {
+	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
+	parser := wire.NewFrameParser(true, true, true)
+	conn := new(Conn)
+	data := make([]byte, 256)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		packet := getPacketBuffer()
+		packet.Data = packet.Data[:len(data)]
+		copy(packet.Data, data)
+		frame, _, err := parser.ParseDatagramFrameBorrowedReusable(wire.FrameTypeDatagramNoLength, packet.Data, protocol.Version1)
+		if err != nil {
+			b.Fatal(err)
+		}
+		frame.DataOwner = conn.retainDatagramBuffer(packet)
+		queue.HandleDatagramFrame(frame)
+		received, err := queue.ReceiveBuffer(context.Background())
+		if err != nil {
+			b.Fatal(err)
+		}
+		received.Release()
+		packet.releaseRef()
+	}
+}
+
 func TestDatagramQueueReceiveWraparoundFIFO(t *testing.T) {
 	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
 
@@ -206,12 +233,52 @@ func TestDatagramQueueTransfersFrameDataOwnership(t *testing.T) {
 	data := []byte("owned datagram")
 	frame := &wire.DatagramFrame{Data: data}
 	queue.HandleDatagramFrame(frame)
+	require.Nil(t, frame.DataOwner)
 	received, err := queue.ReceiveBuffer(context.Background())
 	require.NoError(t, err)
 	require.NotEmpty(t, received)
 	require.True(t, &received.Data[0] == &data[0], "receive queue made a duplicate payload allocation")
 	received.Data[0] = 'O'
 	require.Equal(t, byte('O'), data[0])
+}
+
+func TestBorrowedDatagramScratchDispatchesMultipleFrames(t *testing.T) {
+	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
+	parser := wire.NewFrameParser(true, true, true)
+	conn := new(Conn)
+
+	for round := 0; round < 1000; round++ {
+		packet := getPacketBuffer()
+		payloads := [][]byte{[]byte("datagram-a"), []byte("datagram-b"), []byte("datagram-c")}
+		var packetData []byte
+		for _, payload := range payloads {
+			packetData = append(packetData, payload...)
+		}
+		packet.Data = packet.Data[:len(packetData)]
+		copy(packet.Data, packetData)
+
+		var framePtr *wire.DatagramFrame
+		for i, payload := range payloads {
+			frame, _, err := parser.ParseDatagramFrameBorrowedReusable(wire.FrameTypeDatagramNoLength, packet.Data[i*len(payload):(i+1)*len(payload)], protocol.Version1)
+			require.NoError(t, err)
+			if framePtr == nil {
+				framePtr = frame
+			} else {
+				require.Same(t, framePtr, frame)
+			}
+			frame.DataOwner = conn.retainDatagramBuffer(packet)
+			queue.HandleDatagramFrame(frame)
+			require.Nil(t, frame.DataOwner)
+		}
+
+		for _, payload := range payloads {
+			received, err := queue.ReceiveBuffer(context.Background())
+			require.NoError(t, err)
+			require.Equal(t, payload, received.Data)
+			received.Release()
+		}
+		packet.releaseRef()
+	}
 }
 
 func TestDatagramQueueFullReleasesDroppedBufferWithoutDebugLogging(t *testing.T) {

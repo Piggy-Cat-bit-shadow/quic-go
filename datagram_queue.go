@@ -150,11 +150,12 @@ func (h *datagramQueue) Drop() {
 
 // HandleDatagramFrame handles a received DATAGRAM frame.
 func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
+	owner := f.TakeDataOwner()
 	h.rcvMx.Lock()
 	if h.rcvQueue.Len() >= maxDatagramRcvQueueLen {
 		h.rcvMx.Unlock()
-		if f.DataOwner != nil {
-			f.DataOwner.Release()
+		if owner != nil {
+			owner.Release()
 		}
 		if h.logger.Debug() {
 			h.logger.Debugf("Discarding received DATAGRAM frame (%d bytes payload)", len(f.Data))
@@ -162,17 +163,16 @@ func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
 		return
 	}
 
-	var owner interface{ Release() }
 	var budget *datagramRetentionBudget
-	if f.DataOwner != nil {
+	if owner != nil {
 		if h.retained.tryAcquire() {
-			owner = f.DataOwner
 			budget = h.retained
 		} else {
 			// Copy before releasing the packet-buffer owner. The compact copy is
 			// intentionally not backed by either transport buffer pool.
 			f.Data = append([]byte(nil), f.Data...)
-			f.DataOwner.Release()
+			owner.Release()
+			owner = nil
 			h.retained.fallbackCopies.Add(1)
 		}
 	}

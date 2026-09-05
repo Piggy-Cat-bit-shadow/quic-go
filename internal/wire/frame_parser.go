@@ -22,6 +22,11 @@ type FrameParser struct {
 	// To avoid allocating when parsing, keep a single ACK frame struct.
 	// It is used over and over again.
 	ackFrame *AckFrame
+
+	// Borrowed DATAGRAM frames are consumed synchronously by the connection
+	// packet handler. Keep their metadata in the parser and transfer DataOwner
+	// before parsing the next frame.
+	borrowedDatagramFrame DatagramFrame
 }
 
 // NewFrameParser creates a new frame parser.
@@ -123,6 +128,17 @@ func (p *FrameParser) ParseDatagramFrameBorrowed(frameType FrameType, data []byt
 		return nil, 0, &qerr.TransportError{ErrorCode: qerr.FrameEncodingError, FrameType: uint64(frameType), ErrorMessage: err.Error()}
 	}
 	return f, l, nil
+}
+
+// ParseDatagramFrameBorrowedReusable parses into parser-owned scratch metadata.
+// The returned frame must not be retained past the next parser call; its Data
+// and DataOwner must be transferred by the caller.
+func (p *FrameParser) ParseDatagramFrameBorrowedReusable(frameType FrameType, data []byte, _ protocol.Version) (*DatagramFrame, int, error) {
+	l, err := parseDatagramFrameBorrowedInto(&p.borrowedDatagramFrame, data, frameType)
+	if err != nil {
+		return nil, 0, &qerr.TransportError{ErrorCode: qerr.FrameEncodingError, FrameType: uint64(frameType), ErrorMessage: err.Error()}
+	}
+	return &p.borrowedDatagramFrame, l, nil
 }
 
 // ParseLessCommonFrame parses everything except STREAM, ACK or DATAGRAM.

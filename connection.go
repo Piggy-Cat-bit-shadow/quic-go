@@ -1865,7 +1865,7 @@ func (c *Conn) handleFrames(
 			if buffer == nil {
 				datagramFrame, l, err = c.frameParser.ParseDatagramFrame(frameType, data, c.version)
 			} else {
-				datagramFrame, l, err = c.frameParser.ParseDatagramFrameBorrowed(frameType, data, c.version)
+				datagramFrame, l, err = c.frameParser.ParseDatagramFrameBorrowedReusable(frameType, data, c.version)
 			}
 			if err != nil {
 				return false, false, nil, err
@@ -1884,6 +1884,9 @@ func (c *Conn) handleFrames(
 				datagramFrame.DataOwner = c.retainDatagramBuffer(buffer)
 			}
 			handleErr = c.handleDatagramFrame(datagramFrame)
+			if owner := datagramFrame.TakeDataOwner(); owner != nil {
+				owner.Release()
+			}
 		} else {
 			frame, l, err := c.frameParser.ParseLessCommonFrame(frameType, data, c.version)
 			if err != nil {

@@ -207,6 +207,22 @@ start:
 	goto start
 }
 
+// TryReceiveDatagramBuffer returns one queued datagram without waiting for a
+// future datagram. An open stream with an empty queue is reported as
+// context.Canceled to preserve the existing nonblocking receive convention.
+func (s *stateTrackingStream) TryReceiveDatagramBuffer() (*quic.DatagramBuffer, error) {
+	s.mx.Lock()
+	defer s.mx.Unlock()
+
+	if !s.queue.Empty() {
+		return s.queue.PopFront(), nil
+	}
+	if s.recvErr != nil {
+		return nil, s.recvErr
+	}
+	return nil, context.Canceled
+}
+
 func (s *stateTrackingStream) QUICStream() *quic.Stream {
 	return s.Stream
 }

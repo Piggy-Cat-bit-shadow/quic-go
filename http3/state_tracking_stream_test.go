@@ -334,6 +334,25 @@ func TestDatagramReceivingCloseDrainsQueuedDatagrams(t *testing.T) {
 	require.ErrorIs(t, err, assert.AnError)
 }
 
+func TestTryReceiveDatagramBufferIsQueueFirstAndNonblocking(t *testing.T) {
+	client, _ := newStreamPair(t)
+	str := newStateTrackingStream(client, nil, func([]byte) error { return nil })
+	queued := &quic.DatagramBuffer{Data: []byte("queued")}
+	str.enqueueDatagramBuffer(queued)
+
+	got, err := str.TryReceiveDatagramBuffer()
+	require.NoError(t, err)
+	require.Same(t, queued, got)
+	got.Release()
+
+	_, err = str.TryReceiveDatagramBuffer()
+	require.ErrorIs(t, err, context.Canceled)
+
+	str.closeReceive(assert.AnError)
+	_, err = str.TryReceiveDatagramBuffer()
+	require.ErrorIs(t, err, assert.AnError)
+}
+
 func TestDatagramSending(t *testing.T) {
 	var sendQueue [][]byte
 	errors := []error{nil, nil, assert.AnError}

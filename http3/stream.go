@@ -200,6 +200,18 @@ func (s *Stream) ReceiveDatagramBuffer(ctx context.Context) (*quic.DatagramBuffe
 	return &quic.DatagramBuffer{Data: data}, nil
 }
 
+// TryReceiveDatagramBuffer returns one already-queued HTTP Datagram without
+// waiting for a future datagram. An open stream with an empty queue returns
+// context.Canceled.
+func (s *Stream) TryReceiveDatagramBuffer() (*quic.DatagramBuffer, error) {
+	if b, ok := s.datagramStream.(interface {
+		TryReceiveDatagramBuffer() (*quic.DatagramBuffer, error)
+	}); ok {
+		return b.TryReceiveDatagramBuffer()
+	}
+	return nil, context.Canceled
+}
+
 // A RequestStream is a low-level abstraction representing an HTTP/3 request stream.
 // It decouples sending of the HTTP request from reading the HTTP response, allowing
 // the application to optimistically use the stream (and, for example, send datagrams)
@@ -337,6 +349,13 @@ func (s *RequestStream) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 
 func (s *RequestStream) ReceiveDatagramBuffer(ctx context.Context) (*quic.DatagramBuffer, error) {
 	return s.str.ReceiveDatagramBuffer(ctx)
+}
+
+// TryReceiveDatagramBuffer returns one already-queued HTTP Datagram without
+// waiting for a future datagram. An open stream with an empty queue returns
+// context.Canceled.
+func (s *RequestStream) TryReceiveDatagramBuffer() (*quic.DatagramBuffer, error) {
+	return s.str.TryReceiveDatagramBuffer()
 }
 
 // SendRequestHeader sends the HTTP request.

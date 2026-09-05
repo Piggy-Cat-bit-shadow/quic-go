@@ -130,6 +130,21 @@ func TestDatagramQueueReceive(t *testing.T) {
 	require.Equal(t, []byte("bar"), data)
 }
 
+func BenchmarkDatagramQueueBorrowedReceiveRelease(b *testing.B) {
+	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
+	data := make([]byte, 128)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		queue.HandleDatagramFrame(&wire.DatagramFrame{Data: data, DataOwner: new(countingDatagramOwner)})
+		buffer, err := queue.ReceiveBuffer(context.Background())
+		if err != nil {
+			b.Fatal(err)
+		}
+		buffer.Release()
+	}
+}
+
 func TestDatagramQueueReceiveWraparoundFIFO(t *testing.T) {
 	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
 

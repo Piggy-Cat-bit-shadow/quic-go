@@ -46,19 +46,6 @@ func (b *datagramRetentionBudget) release() {
 	}
 }
 
-type budgetedDatagramOwner struct {
-	owner  interface{ Release() }
-	budget *datagramRetentionBudget
-	once   atomic.Bool
-}
-
-func (o *budgetedDatagramOwner) Release() {
-	if o != nil && o.once.CompareAndSwap(false, true) {
-		defer o.budget.release()
-		o.owner.Release()
-	}
-}
-
 type datagramQueue struct {
 	sendMx    sync.Mutex
 	sendQueue ringbuffer.RingBuffer[*wire.DatagramFrame]
@@ -176,9 +163,11 @@ func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
 	}
 
 	var owner interface{ Release() }
+	var budget *datagramRetentionBudget
 	if f.DataOwner != nil {
 		if h.retained.tryAcquire() {
-			owner = &budgetedDatagramOwner{owner: f.DataOwner, budget: h.retained}
+			owner = f.DataOwner
+			budget = h.retained
 		} else {
 			// Copy before releasing the packet-buffer owner. The compact copy is
 			// intentionally not backed by either transport buffer pool.
@@ -187,7 +176,7 @@ func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
 			h.retained.fallbackCopies.Add(1)
 		}
 	}
-	b := &DatagramBuffer{Data: f.Data, owner: owner}
+	b := &DatagramBuffer{Data: f.Data, owner: owner, budget: budget}
 	h.rcvQueue.PushBack(b)
 	select {
 	case h.rcvd <- struct{}{}:
@@ -200,6 +189,7 @@ func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
 type DatagramBuffer struct {
 	Data     []byte
 	owner    interface{ Release() }
+	budget   *datagramRetentionBudget
 	released atomic.Bool
 }
 
@@ -208,10 +198,15 @@ func (b *DatagramBuffer) Release() {
 		return
 	}
 	owner := b.owner
+	budget := b.budget
 	b.owner = nil
+	b.budget = nil
 	b.Data = nil
 	if owner != nil {
 		owner.Release()
+	}
+	if budget != nil {
+		budget.release()
 	}
 }
 

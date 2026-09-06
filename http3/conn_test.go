@@ -472,6 +472,65 @@ func TestEarlyDatagramExpiry(t *testing.T) {
 	require.Empty(t, conn.earlyDatagrams)
 }
 
+func TestDuplicateEarlyDatagramIsDroppedAndReleased(t *testing.T) {
+	clientConn, serverConn := newConnPair(t, withDatagrams())
+	defer clientConn.CloseWithError(0, "")
+	defer serverConn.CloseWithError(0, "")
+	conn := newRawConn(clientConn, true, nil, nopControlStrHandler, nil, nil)
+
+	str0, err := clientConn.OpenStream()
+	require.NoError(t, err)
+	str0.Close()
+	str, err := clientConn.OpenStream()
+	require.NoError(t, err)
+	id := str.StreamID()
+	first := &quic.DatagramBuffer{Data: append(quicvarint.Append(nil, uint64(id/4)), byte(1))}
+	second := &quic.DatagramBuffer{Data: append(quicvarint.Append(nil, uint64(id/4)), byte(2))}
+	require.NoError(t, conn.routeDatagram(first))
+	require.NoError(t, conn.routeDatagram(second))
+	conn.streamMx.Lock()
+	earlyCount := len(conn.earlyDatagrams)
+	conn.streamMx.Unlock()
+	require.Equal(t, 1, earlyCount)
+	require.Nil(t, second.Data, "second early DATAGRAM must be released")
+
+	hstr := conn.TrackStream(str)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	data, err := hstr.ReceiveDatagram(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []byte{1}, data)
+	conn.streamMx.Lock()
+	earlyCount = len(conn.earlyDatagrams)
+	conn.streamMx.Unlock()
+	require.Zero(t, earlyCount)
+}
+
+func TestConnectionCloseReleasesEarlyDatagrams(t *testing.T) {
+	localConn, peerConn := newConnPair(t, withDatagrams())
+	defer peerConn.CloseWithError(0, "")
+	conn := newRawConn(localConn, true, nil, nopControlStrHandler, nil, nil)
+
+	b := &quic.DatagramBuffer{Data: append(quicvarint.Append(nil, 1), byte(1))}
+	require.NoError(t, conn.routeDatagram(b))
+	conn.streamMx.Lock()
+	earlyCount := len(conn.earlyDatagrams)
+	conn.streamMx.Unlock()
+	require.Equal(t, 1, earlyCount)
+	require.NoError(t, localConn.CloseWithError(0, "test close"))
+
+	require.Eventually(t, func() bool {
+		conn.streamMx.Lock()
+		defer conn.streamMx.Unlock()
+		return len(conn.earlyDatagrams) == 0
+	}, time.Second, time.Millisecond)
+	// The timer callback may run after close; Release is idempotent and the
+	// deleted map entry prevents a second lifecycle release. A second explicit
+	// release is therefore safe and must not revive the retained buffer.
+	b.Release()
+	time.Sleep(scaleDuration(2 * time.Millisecond))
+}
+
 func TestTrackedDatagramNeverUsesEarlyRetention(t *testing.T) {
 	clientConn, serverConn := newConnPair(t, withDatagrams())
 	defer clientConn.CloseWithError(0, "")

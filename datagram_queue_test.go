@@ -175,10 +175,10 @@ func BenchmarkBorrowedDatagramParserQueueReceive(b *testing.B) {
 func TestDatagramQueueReceiveWraparoundFIFO(t *testing.T) {
 	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
 
-	for i := 0; i < maxDatagramRcvQueueLen; i++ {
+	for i := range maxDatagramRcvQueueLen {
 		queue.HandleDatagramFrame(&wire.DatagramFrame{Data: []byte{byte(i)}})
 	}
-	for i := 0; i < maxDatagramRcvQueueLen/2; i++ {
+	for i := range maxDatagramRcvQueueLen / 2 {
 		b, err := queue.ReceiveBuffer(context.Background())
 		require.NoError(t, err)
 		require.Equal(t, []byte{byte(i)}, b.Data)
@@ -199,15 +199,15 @@ func TestDatagramQueueReceiveWraparoundFIFO(t *testing.T) {
 
 func TestDatagramQueueWraparoundCloseReleasesQueuedOwners(t *testing.T) {
 	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
-	for i := 0; i < maxDatagramRcvQueueLen; i++ {
+	for i := range maxDatagramRcvQueueLen {
 		queue.HandleDatagramFrame(&wire.DatagramFrame{Data: []byte{byte(i)}})
 	}
-	for i := 0; i < maxDatagramRcvQueueLen/2; i++ {
+	for range maxDatagramRcvQueueLen / 2 {
 		b, err := queue.ReceiveBuffer(context.Background())
 		require.NoError(t, err)
 		b.Release()
 	}
-	for i := 0; i < maxDatagramRcvQueueLen/2-3; i++ {
+	for i := range maxDatagramRcvQueueLen/2 - 3 {
 		queue.HandleDatagramFrame(&wire.DatagramFrame{Data: []byte{byte(i)}})
 	}
 
@@ -247,7 +247,7 @@ func TestBorrowedDatagramScratchDispatchesMultipleFrames(t *testing.T) {
 	parser := wire.NewFrameParser(true, true, true)
 	conn := new(Conn)
 
-	for round := 0; round < 1000; round++ {
+	for range 1000 {
 		packet := getPacketBuffer()
 		payloads := [][]byte{[]byte("datagram-a"), []byte("datagram-b"), []byte("datagram-c")}
 		var packetData []byte
@@ -283,7 +283,7 @@ func TestBorrowedDatagramScratchDispatchesMultipleFrames(t *testing.T) {
 
 func TestDatagramQueueFullReleasesDroppedBufferWithoutDebugLogging(t *testing.T) {
 	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
-	for i := 0; i < maxDatagramRcvQueueLen; i++ {
+	for i := range maxDatagramRcvQueueLen {
 		queue.HandleDatagramFrame(&wire.DatagramFrame{Data: []byte{byte(i)}})
 	}
 
@@ -296,7 +296,7 @@ func TestDatagramQueueFullReleasesDroppedBufferWithDebugLogging(t *testing.T) {
 	logger := utils.DefaultLogger.WithPrefix("datagram-queue-test")
 	logger.SetLogLevel(utils.LogLevelDebug)
 	queue := newDatagramQueue(func() {}, logger)
-	for i := 0; i < maxDatagramRcvQueueLen; i++ {
+	for i := range maxDatagramRcvQueueLen {
 		queue.HandleDatagramFrame(&wire.DatagramFrame{Data: []byte{byte(i)}})
 	}
 
@@ -362,7 +362,7 @@ func TestDatagramRetentionBudgetKeepsFirst64Borrowed(t *testing.T) {
 func TestDatagramRetentionBudgetFallsBackToCompactCopy(t *testing.T) {
 	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
 	borrowed := make([]*DatagramBuffer, 0, maxRetainedDatagramBuffers)
-	for i := 0; i < maxRetainedDatagramBuffers; i++ {
+	for i := range maxRetainedDatagramBuffers {
 		owner := new(countingDatagramOwner)
 		queue.HandleDatagramFrame(&wire.DatagramFrame{Data: []byte{byte(i)}, DataOwner: owner})
 		b, err := queue.ReceiveBuffer(context.Background())
@@ -419,7 +419,7 @@ func TestDatagramRetentionBudgetReacquiresAfterRelease(t *testing.T) {
 
 func TestDatagramQueueFullPrecedesRetentionFallback(t *testing.T) {
 	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
-	for i := 0; i < maxDatagramRcvQueueLen; i++ {
+	for i := range maxDatagramRcvQueueLen {
 		queue.HandleDatagramFrame(&wire.DatagramFrame{Data: []byte{byte(i)}})
 	}
 	owner := new(countingDatagramOwner)
@@ -454,7 +454,7 @@ func TestDatagramRetentionBudgetCountsHandlesNotBackingOwners(t *testing.T) {
 	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
 	owner := new(countingDatagramOwner)
 	data := []byte("shared backing owner")
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		queue.HandleDatagramFrame(&wire.DatagramFrame{Data: data, DataOwner: owner})
 	}
 	require.EqualValues(t, 2, queue.retained.inFlight.Load())
@@ -472,16 +472,14 @@ func TestDatagramRetentionBudgetCountsHandlesNotBackingOwners(t *testing.T) {
 func TestDatagramRetentionBudgetConcurrentStress(t *testing.T) {
 	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
 	const rounds = 1000
-	for i := 0; i < rounds; i++ {
+	for range rounds {
 		var wg sync.WaitGroup
-		for j := 0; j < 8; j++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+		for range 8 {
+			wg.Go(func() {
 				if queue.retained.tryAcquire() {
 					queue.retained.release()
 				}
-			}()
+			})
 		}
 		wg.Wait()
 		require.LessOrEqual(t, queue.retained.highWater.Load(), int32(maxRetainedDatagramBuffers))

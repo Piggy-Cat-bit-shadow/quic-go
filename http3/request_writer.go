@@ -16,10 +16,10 @@ import (
 	"golang.org/x/net/http2/hpack"
 	"golang.org/x/net/idna"
 
-	"github.com/quic-go/qpack"
 	"github.com/metacubex/quic-go"
 	"github.com/metacubex/quic-go/http3/qlog"
 	"github.com/metacubex/quic-go/qlogwriter"
+	"github.com/quic-go/qpack"
 )
 
 const bodyCopyBufferSize = 8 * 1024

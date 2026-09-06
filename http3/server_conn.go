@@ -12,9 +12,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/quic-go/qpack"
 	"github.com/metacubex/quic-go"
 	"github.com/metacubex/quic-go/qlogwriter"
+	"github.com/quic-go/qpack"
 )
 
 // RawServerConn is an HTTP/3 server connection.

@@ -93,10 +93,10 @@ func TestPopFrontClearsPointerSlot(t *testing.T) {
 func TestPreallocatedWraparoundFIFO(t *testing.T) {
 	r := RingBuffer[int]{}
 	r.Init(4)
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		r.PushBack(i)
 	}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		require.Equal(t, i, r.PopFront())
 	}
 	r.PushBack(4)
@@ -112,10 +112,10 @@ func TestPreallocatedOperationsDoNotAllocate(t *testing.T) {
 	r := RingBuffer[int]{}
 	r.Init(4)
 	allocs := testing.AllocsPerRun(100, func() {
-		for i := 0; i < 4; i++ {
+		for i := range 4 {
 			r.PushBack(i)
 		}
-		for i := 0; i < 4; i++ {
+		for range 4 {
 			r.PopFront()
 		}
 	})

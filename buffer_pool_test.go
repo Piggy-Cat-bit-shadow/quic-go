@@ -51,7 +51,7 @@ func TestPacketBufferConcurrentFinalReleaseReturnsToPoolOnce(t *testing.T) {
 	defer func() { packetBufferPutBackHook = nil }()
 
 	const rounds = 1000
-	for i := 0; i < rounds; i++ {
+	for i := range rounds {
 		refs := 2 + i%7
 		buf := getPacketBuffer()
 		handles := make([]*retainedPacketBufferRef, refs-1)
@@ -120,7 +120,7 @@ func TestPacketBufferSplitReferencesUseSingleFinalRelease(t *testing.T) {
 	buf.Split()
 	buf.Retain()
 	buf.Retain()
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		buf.releaseRef()
 	}
 	require.EqualValues(t, 1, putBacks.Load())

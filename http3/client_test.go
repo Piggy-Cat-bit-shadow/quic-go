@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/qpack"
 	"github.com/metacubex/quic-go"
 	"github.com/metacubex/quic-go/http3/qlog"
 	"github.com/metacubex/quic-go/qlogwriter"
 	"github.com/metacubex/quic-go/quicvarint"
 	"github.com/metacubex/quic-go/testutils/events"
+	"github.com/quic-go/qpack"
 
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"

@@ -112,8 +112,8 @@ func (h *receivedPacketHistory) DeleteBelow(p protocol.PacketNumber) {
 // Backward returns an iterator over the ranges in reverse order
 func (h *receivedPacketHistory) Backward() iter.Seq[interval] {
 	return func(yield func(interval) bool) {
-		for i := len(h.ranges) - 1; i >= 0; i-- {
-			if !yield(h.ranges[i]) {
+		for _, v := range slices.Backward(h.ranges) {
+			if !yield(v) {
 				return
 			}
 		}
@@ -125,8 +125,8 @@ func (h *receivedPacketHistory) HighestMissingUpTo(p protocol.PacketNumber) prot
 		return protocol.InvalidPacketNumber
 	}
 	p = min(h.ranges[len(h.ranges)-1].End, p)
-	for i := len(h.ranges) - 1; i >= 0; i-- {
-		r := h.ranges[i]
+	for i, r := range slices.Backward(h.ranges) {
+
 		if p >= r.Start && p <= r.End { // p is contained in this range
 			highest := r.Start - 1 // highest packet in the gap before this range
 			if h.deletedBelow != protocol.InvalidPacketNumber && highest < h.deletedBelow {
@@ -147,11 +147,11 @@ func (h *receivedPacketHistory) IsPotentiallyDuplicate(p protocol.PacketNumber) 
 		return true
 	}
 	// Iterating over the slices is faster than using a binary search (using slices.BinarySearchFunc).
-	for i := len(h.ranges) - 1; i >= 0; i-- {
-		if p > h.ranges[i].End {
+	for _, v := range slices.Backward(h.ranges) {
+		if p > v.End {
 			return false
 		}
-		if p <= h.ranges[i].End && p >= h.ranges[i].Start {
+		if p <= v.End && p >= v.Start {
 			return true
 		}
 	}

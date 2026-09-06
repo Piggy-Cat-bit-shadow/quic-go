@@ -10,6 +10,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/metacubex/quic-go"
 	"github.com/metacubex/quic-go/http3/qlog"
@@ -18,6 +19,20 @@ import (
 )
 
 const maxQuarterStreamID = 1<<60 - 1
+
+// Keep one request DATAGRAM briefly when QUIC delivers it before the server
+// accept loop has registered its request stream. The aggregate cap matches the
+// per-stream HTTP/3 receive queue limit, so this ordering bridge cannot create
+// an unbounded orphan queue.
+const maxEarlyDatagrams = 32
+
+var earlyDatagramLifetime = time.Second
+
+type earlyDatagram struct {
+	buffer *quic.DatagramBuffer
+	offset int
+	timer  *time.Timer
+}
 
 // invalidStreamID is a stream ID that is invalid. The first valid stream ID in QUIC is 0.
 const invalidStreamID = quic.StreamID(-1)
@@ -32,8 +47,9 @@ type rawConn struct {
 
 	enableDatagrams bool
 
-	streamMx sync.Mutex
-	streams  map[quic.StreamID]*stateTrackingStream
+	streamMx       sync.Mutex
+	streams        map[quic.StreamID]*stateTrackingStream
+	earlyDatagrams map[quic.StreamID]*earlyDatagram
 
 	rcvdControlStr      atomic.Bool
 	rcvdQPACKEncoderStr atomic.Bool
@@ -63,6 +79,7 @@ func newRawConn(
 		enableDatagrams:   enableDatagrams,
 		receivedSettings:  make(chan struct{}),
 		streams:           make(map[quic.StreamID]*stateTrackingStream),
+		earlyDatagrams:    make(map[quic.StreamID]*earlyDatagram),
 		qlogger:           qlogger,
 		onStreamsEmpty:    onStreamsEmpty,
 		controlStrHandler: controlStrHandler,
@@ -70,6 +87,7 @@ func newRawConn(
 	if qlogger != nil {
 		context.AfterFunc(quicConn.Context(), c.closeQlogger)
 	}
+	context.AfterFunc(quicConn.Context(), c.releaseEarlyDatagrams)
 	return c
 }
 
@@ -124,9 +142,53 @@ func (c *rawConn) TrackStream(str *quic.Stream) *stateTrackingStream {
 
 	c.streamMx.Lock()
 	c.streams[str.StreamID()] = hstr
+	early := c.earlyDatagrams[str.StreamID()]
+	delete(c.earlyDatagrams, str.StreamID())
 	c.qloggerWG.Add(1)
 	c.streamMx.Unlock()
+	if early != nil {
+		early.timer.Stop()
+		early.buffer.Data = early.buffer.Data[early.offset:]
+		hstr.enqueueDatagramBuffer(early.buffer)
+	}
 	return hstr
+}
+
+func (c *rawConn) retainEarlyDatagram(id quic.StreamID, offset int, b *quic.DatagramBuffer) bool {
+	c.streamMx.Lock()
+	defer c.streamMx.Unlock()
+	if len(c.earlyDatagrams) >= maxEarlyDatagrams {
+		return false
+	}
+	if _, exists := c.earlyDatagrams[id]; exists {
+		return false
+	}
+	early := &earlyDatagram{buffer: b, offset: offset}
+	c.earlyDatagrams[id] = early
+	early.timer = time.AfterFunc(earlyDatagramLifetime, func() { c.expireEarlyDatagram(id, early) })
+	return true
+}
+
+func (c *rawConn) expireEarlyDatagram(id quic.StreamID, early *earlyDatagram) {
+	c.streamMx.Lock()
+	if c.earlyDatagrams[id] != early {
+		c.streamMx.Unlock()
+		return
+	}
+	delete(c.earlyDatagrams, id)
+	c.streamMx.Unlock()
+	early.buffer.Release()
+}
+
+func (c *rawConn) releaseEarlyDatagrams() {
+	c.streamMx.Lock()
+	early := c.earlyDatagrams
+	c.earlyDatagrams = make(map[quic.StreamID]*earlyDatagram)
+	c.streamMx.Unlock()
+	for _, entry := range early {
+		entry.timer.Stop()
+		entry.buffer.Release()
+	}
 }
 
 func (c *rawConn) UpdateStreamPriority(id quic.StreamID, urgency int8, incremental bool) {
@@ -344,37 +406,46 @@ func (c *rawConn) receiveDatagrams() error {
 		if err != nil {
 			return err
 		}
-		quarterStreamID, n, err := quicvarint.Parse(b.Data)
-		if err != nil {
-			b.Release()
-			c.CloseWithError(quic.ApplicationErrorCode(ErrCodeDatagramError), "")
-			return fmt.Errorf("could not read quarter stream id: %w", err)
+		if err := c.routeDatagram(b); err != nil {
+			return err
 		}
-		if c.qlogger != nil {
-			c.qlogger.RecordEvent(qlog.DatagramParsed{
-				QuarterStreamID: quarterStreamID,
-				Raw: qlog.RawInfo{
-					Length:        len(b.Data),
-					PayloadLength: len(b.Data) - n,
-				},
-			})
-		}
-		if quarterStreamID > maxQuarterStreamID {
-			b.Release()
-			c.CloseWithError(quic.ApplicationErrorCode(ErrCodeDatagramError), "")
-			return fmt.Errorf("invalid quarter stream id: %w", err)
-		}
-		streamID := quic.StreamID(4 * quarterStreamID)
-		c.streamMx.Lock()
-		dg, ok := c.streams[streamID]
-		c.streamMx.Unlock()
-		if !ok {
-			b.Release()
-			continue
-		}
-		b.Data = b.Data[n:]
-		dg.enqueueDatagramBuffer(b)
 	}
+}
+
+func (c *rawConn) routeDatagram(b *quic.DatagramBuffer) error {
+	quarterStreamID, n, err := quicvarint.Parse(b.Data)
+	if err != nil {
+		b.Release()
+		c.CloseWithError(quic.ApplicationErrorCode(ErrCodeDatagramError), "")
+		return fmt.Errorf("could not read quarter stream id: %w", err)
+	}
+	if c.qlogger != nil {
+		c.qlogger.RecordEvent(qlog.DatagramParsed{
+			QuarterStreamID: quarterStreamID,
+			Raw: qlog.RawInfo{
+				Length:        len(b.Data),
+				PayloadLength: len(b.Data) - n,
+			},
+		})
+	}
+	if quarterStreamID > maxQuarterStreamID {
+		b.Release()
+		c.CloseWithError(quic.ApplicationErrorCode(ErrCodeDatagramError), "")
+		return fmt.Errorf("invalid quarter stream id: %w", err)
+	}
+	streamID := quic.StreamID(4 * quarterStreamID)
+	c.streamMx.Lock()
+	dg, ok := c.streams[streamID]
+	c.streamMx.Unlock()
+	if !ok {
+		if !c.retainEarlyDatagram(streamID, n, b) {
+			b.Release()
+		}
+		return nil
+	}
+	b.Data = b.Data[n:]
+	dg.enqueueDatagramBuffer(b)
+	return nil
 }
 
 // ReceivedSettings returns a channel that is closed once the peer's SETTINGS frame was received.

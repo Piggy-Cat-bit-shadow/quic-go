@@ -375,13 +375,13 @@ func TestConnSendAndReceiveDatagram(t *testing.T) {
 
 	const strID = 4
 
-	// first deliver a datagram...
-	// since the stream is not open yet, it will be dropped
+	// Route an early datagram before the request stream is registered. Calling
+	// routeDatagram directly makes the lifecycle ordering deterministic instead
+	// of relying on packet scheduling or sleeps.
 	quarterStreamID := quicvarint.Append([]byte{}, strID/4)
 
 	datagram := append(quarterStreamID, []byte("foo")...)
-	require.NoError(t, serverConn.SendDatagram(datagram))
-	time.Sleep(scaleDuration(10 * time.Millisecond)) // give the datagram a chance to be delivered
+	require.NoError(t, conn.routeDatagram(&quic.DatagramBuffer{Data: datagram}))
 
 	require.Equal(t,
 		[]qlogwriter.Event{
@@ -403,11 +403,14 @@ func TestConnSendAndReceiveDatagram(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, quic.StreamID(strID), str.StreamID())
 	datagramStr := conn.TrackStream(str)
+	data, err := datagramStr.ReceiveDatagram(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []byte("foo"), data)
 
-	// now open the stream...
+	// A tracked stream continues to receive normal DATAGRAMs.
 	require.NoError(t, serverConn.SendDatagram(append(quarterStreamID, []byte("bar")...)))
 
-	data, err := datagramStr.ReceiveDatagram(ctx)
+	data, err = datagramStr.ReceiveDatagram(ctx)
 	require.NoError(t, err)
 	require.Equal(t, []byte("bar"), data)
 
@@ -431,6 +434,42 @@ func TestConnSendAndReceiveDatagram(t *testing.T) {
 	data, err = serverConn.ReceiveDatagram(ctx)
 	require.NoError(t, err)
 	require.Equal(t, expected, data)
+}
+
+func TestEarlyDatagramBoundsAndRelease(t *testing.T) {
+	localConn, peerConn := newConnPair(t, withDatagrams())
+	defer localConn.CloseWithError(0, "")
+	defer peerConn.CloseWithError(0, "")
+	conn := newRawConn(localConn, true, nil, nopControlStrHandler, nil, nil)
+
+	for i := 0; i < maxEarlyDatagrams; i++ {
+		id := quic.StreamID(4 * (i + 1))
+		data := append(quicvarint.Append(nil, uint64(id/4)), byte(i))
+		require.NoError(t, conn.routeDatagram(&quic.DatagramBuffer{Data: data}))
+	}
+	require.Len(t, conn.earlyDatagrams, maxEarlyDatagrams)
+	overflow := &quic.DatagramBuffer{Data: append(quicvarint.Append(nil, 100), byte(1))}
+	require.NoError(t, conn.routeDatagram(overflow))
+	require.Nil(t, overflow.Data, "overflow must release immediately")
+
+	conn.releaseEarlyDatagrams()
+	require.Empty(t, conn.earlyDatagrams)
+}
+
+func TestEarlyDatagramExpiry(t *testing.T) {
+	localConn, peerConn := newConnPair(t, withDatagrams())
+	defer localConn.CloseWithError(0, "")
+	defer peerConn.CloseWithError(0, "")
+	conn := newRawConn(localConn, true, nil, nopControlStrHandler, nil, nil)
+
+	id := quic.StreamID(4)
+	b := &quic.DatagramBuffer{Data: append(quicvarint.Append(nil, uint64(id/4)), byte(1))}
+	require.NoError(t, conn.routeDatagram(b))
+	early := conn.earlyDatagrams[id]
+	require.NotNil(t, early)
+	conn.expireEarlyDatagram(id, early)
+	require.Nil(t, b.Data, "expired early DATAGRAM must release")
+	require.Empty(t, conn.earlyDatagrams)
 }
 
 func TestConnDatagramFailures(t *testing.T) {

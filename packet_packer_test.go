@@ -650,6 +650,7 @@ func TestPackPathChallengeAndPathResponse(t *testing.T) {
 func TestPackDatagramFrames(t *testing.T) {
 	mockCtrl := gomock.NewController(t)
 	tp := newTestPacketPacker(t, mockCtrl, protocol.PerspectiveServer)
+	owner := new(countingDatagramOwner)
 
 	tp.ackFramer.EXPECT().GetAckFrame(protocol.Encryption1RTT, gomock.Any(), true)
 	tp.pnManager.EXPECT().PeekPacketNumber(protocol.Encryption1RTT).Return(protocol.PacketNumber(0x42), protocol.PacketNumberLen2)
@@ -658,6 +659,7 @@ func TestPackDatagramFrames(t *testing.T) {
 	tp.datagramQueue.Add(&wire.DatagramFrame{
 		DataLenPresent: true,
 		Data:           []byte("foobar"),
+		SendOwner:      owner,
 	})
 	tp.framer.EXPECT().HasData()
 	buffer := getPacketBuffer()
@@ -667,6 +669,8 @@ func TestPackDatagramFrames(t *testing.T) {
 	require.IsType(t, &wire.DatagramFrame{}, p.Frames[0].Frame)
 	require.Equal(t, []byte("foobar"), p.Frames[0].Frame.(*wire.DatagramFrame).Data)
 	require.NotEmpty(t, buffer.Data)
+	releaseOwnedDatagrams(p.Frames)
+	require.EqualValues(t, 1, owner.count(), "successful serialization releases ownership when the packet lifecycle ends")
 }
 
 func TestPackLargeDatagramFrame(t *testing.T) {
@@ -680,6 +684,8 @@ func TestPackLargeDatagramFrame(t *testing.T) {
 	tp.pnManager.EXPECT().PopPacketNumber(protocol.Encryption1RTT).Return(protocol.PacketNumber(0x42))
 	tp.sealingManager.EXPECT().Get1RTTSealer().Return(newMockShortHeaderSealer(mockCtrl), nil)
 	f := &wire.DatagramFrame{DataLenPresent: true, Data: make([]byte, maxPacketSize-10)}
+	owner := new(countingDatagramOwner)
+	f.SendOwner = owner
 	tp.datagramQueue.Add(f)
 	tp.framer.EXPECT().HasData()
 	buffer := getPacketBuffer()
@@ -689,6 +695,7 @@ func TestPackLargeDatagramFrame(t *testing.T) {
 	require.Empty(t, p.Frames)
 	require.NotEmpty(t, buffer.Data)
 	require.Equal(t, f, tp.datagramQueue.Peek()) // make sure the frame is still there
+	require.Zero(t, owner.count(), "temporary retry must retain ownership")
 
 	// Now try packing again, but with a smaller packet size.
 	// The DATAGRAM frame should now be dropped, as we can't expect to ever be able tosend it out.
@@ -701,6 +708,8 @@ func TestPackLargeDatagramFrame(t *testing.T) {
 	p, err = tp.packer.AppendPacket(buffer, newMaxPacketSize, monotime.Now(), protocol.Version1)
 	require.ErrorIs(t, err, errNothingToPack)
 	require.Nil(t, tp.datagramQueue.Peek()) // make sure the frame is gone
+	require.EqualValues(t, 1, owner.count(), "permanent discard must release ownership exactly once")
+	require.Nil(t, f.Data)
 }
 
 func TestPackRetransmissions(t *testing.T) {

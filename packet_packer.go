@@ -661,7 +661,7 @@ func (p *packetPacker) composeNextPacket(
 				// The DATAGRAM frame doesn't fit, and the packet doesn't contain an ACK.
 				// Discard this frame. There's no point in retrying this in the next packet,
 				// as it's unlikely that the available packet size will increase.
-				p.datagramQueue.Pop()
+				p.datagramQueue.Drop()
 			}
 			// If the DATAGRAM frame was too large and the packet contained an ACK, we'll try to send it out later.
 		}

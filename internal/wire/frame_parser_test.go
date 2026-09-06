@@ -731,6 +731,9 @@ func parseFrames(tb testing.TB, parser *FrameParser, data []byte, frames ...Fram
 }
 
 func TestFrameParserAllocs(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts are not meaningful under race instrumentation")
+	}
 	t.Run("STREAM", func(t *testing.T) {
 		var frames []Frame
 		for i := range 10 {

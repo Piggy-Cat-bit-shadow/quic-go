@@ -76,3 +76,48 @@ func BenchmarkRingBufferWrapped(b *testing.B) {
 		val = r.PopFront()
 	}
 }
+
+func TestPopFrontClearsPointerSlot(t *testing.T) {
+	type item struct{ value int }
+	a := &item{value: 1}
+	b := &item{value: 2}
+	r := RingBuffer[*item]{}
+	r.Init(4)
+	r.PushBack(a)
+	r.PushBack(b)
+	require.Same(t, a, r.PopFront())
+	require.Nil(t, r.ring[0])
+	require.Same(t, b, r.PeekFront())
+}
+
+func TestPreallocatedWraparoundFIFO(t *testing.T) {
+	r := RingBuffer[int]{}
+	r.Init(4)
+	for i := 0; i < 4; i++ {
+		r.PushBack(i)
+	}
+	for i := 0; i < 2; i++ {
+		require.Equal(t, i, r.PopFront())
+	}
+	r.PushBack(4)
+	r.PushBack(5)
+	require.Equal(t, 4, r.Len())
+	for i := 2; i < 6; i++ {
+		require.Equal(t, i, r.PopFront())
+	}
+	require.True(t, r.Empty())
+}
+
+func TestPreallocatedOperationsDoNotAllocate(t *testing.T) {
+	r := RingBuffer[int]{}
+	r.Init(4)
+	allocs := testing.AllocsPerRun(100, func() {
+		for i := 0; i < 4; i++ {
+			r.PushBack(i)
+		}
+		for i := 0; i < 4; i++ {
+			r.PopFront()
+		}
+	})
+	require.Zero(t, allocs)
+}

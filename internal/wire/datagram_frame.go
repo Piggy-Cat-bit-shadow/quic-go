@@ -2,6 +2,7 @@ package wire
 
 import (
 	"io"
+	"sync/atomic"
 
 	"github.com/metacubex/quic-go/internal/protocol"
 	"github.com/metacubex/quic-go/quicvarint"
@@ -17,6 +18,36 @@ var MaxDatagramSize protocol.ByteCount = 16383
 type DatagramFrame struct {
 	DataLenPresent bool
 	Data           []byte
+	// DataOwner is set only by the QUIC borrowed receive path. It is kept as
+	// an interface to avoid coupling the wire parser to packetBuffer.
+	DataOwner interface{ Release() }
+	// SendOwner keeps caller-owned send buffers alive until the frame has been
+	// serialized, or until the frame is discarded before serialization.
+	SendOwner         interface{ Release() }
+	sendOwnerReleased atomic.Bool
+}
+
+// ReleaseSendOwner releases an asynchronously-owned send buffer exactly once.
+// It also detaches the mutable caller backing from frame metadata retained by
+// sent-packet history. DATAGRAM frames are never retransmitted.
+func (f *DatagramFrame) ReleaseSendOwner() {
+	if f == nil || f.SendOwner == nil || !f.sendOwnerReleased.CompareAndSwap(false, true) {
+		return
+	}
+	owner := f.SendOwner
+	f.SendOwner = nil
+	f.Data = nil
+	owner.Release()
+}
+
+// TakeDataOwner transfers the borrowed receive owner out of the frame.
+func (f *DatagramFrame) TakeDataOwner() interface{ Release() } {
+	if f == nil {
+		return nil
+	}
+	owner := f.DataOwner
+	f.DataOwner = nil
+	return owner
 }
 
 func parseDatagramFrame(b []byte, typ FrameType, _ protocol.Version) (*DatagramFrame, int, error) {
@@ -42,6 +73,41 @@ func parseDatagramFrame(b []byte, typ FrameType, _ protocol.Version) (*DatagramF
 	f.Data = make([]byte, length)
 	copy(f.Data, b)
 	return f, startLen - len(b) + int(length), nil
+}
+
+func parseDatagramFrameBorrowed(b []byte, typ FrameType, _ protocol.Version) (*DatagramFrame, int, error) {
+	f := &DatagramFrame{}
+	l, err := parseDatagramFrameBorrowedInto(f, b, typ)
+	if err != nil {
+		return nil, 0, err
+	}
+	return f, l, nil
+}
+
+func parseDatagramFrameBorrowedInto(f *DatagramFrame, b []byte, typ FrameType) (int, error) {
+	f.DataLenPresent = uint64(typ)&0x1 > 0
+	f.Data = nil
+	f.DataOwner = nil
+	f.SendOwner = nil
+	f.sendOwnerReleased.Store(false)
+	startLen := len(b)
+	var length uint64
+	if f.DataLenPresent {
+		var l int
+		var err error
+		length, l, err = quicvarint.Parse(b)
+		if err != nil {
+			return 0, replaceUnexpectedEOF(err)
+		}
+		b = b[l:]
+		if length > uint64(len(b)) {
+			return 0, io.EOF
+		}
+	} else {
+		length = uint64(len(b))
+	}
+	f.Data = b[:length]
+	return startLen - len(b) + int(length), nil
 }
 
 func (f *DatagramFrame) Append(b []byte, _ protocol.Version) ([]byte, error) {

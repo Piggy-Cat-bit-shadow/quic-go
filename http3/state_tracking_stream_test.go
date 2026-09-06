@@ -2,6 +2,7 @@ package http3
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -13,6 +14,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type testDatagramPayloadOwner struct {
+	releases int
+}
+
+func (o *testDatagramPayloadOwner) Release() { o.releases++ }
 
 func newStreamPair(t *testing.T) (client, server *quic.Stream) {
 	t.Helper()
@@ -49,6 +56,53 @@ func checkDatagramReceive(t *testing.T, str *stateTrackingStream) {
 func checkDatagramSend(t *testing.T, str *stateTrackingStream) {
 	t.Helper()
 	require.NoError(t, str.SendDatagram([]byte("test")))
+}
+
+func TestStateTrackingStreamSendDatagramBufferOwned(t *testing.T) {
+	client, _ := newStreamPair(t)
+	str := newStateTrackingStream(client, nil, func([]byte) error {
+		t.Fatal("legacy datagram callback used")
+		return nil
+	})
+	var called bool
+	str.sendDatagramBufferOwned = func(buf []byte, offset, length int, owner quic.DatagramPayloadOwner) error {
+		called = true
+		require.Equal(t, []byte("payload"), buf[offset:offset+length])
+		return nil
+	}
+	owner := &testDatagramPayloadOwner{}
+	hstr := &Stream{datagramStream: str}
+	require.NoError(t, hstr.SendDatagramBufferOwned([]byte("payload"), 0, 7, owner))
+	require.True(t, called)
+	require.Zero(t, owner.releases, "ownership must transfer on success")
+
+	owner.Release()
+	require.Equal(t, 1, owner.releases)
+}
+
+func TestStateTrackingStreamSendDatagramBufferOwnedFallbackReleasesOnSuccess(t *testing.T) {
+	client, _ := newStreamPair(t)
+	str := newStateTrackingStream(client, nil, func([]byte) error { return nil })
+	str.sendDatagramBuffer = func(buf []byte, offset, length int) error {
+		require.Equal(t, []byte("payload"), buf[offset:offset+length])
+		return nil
+	}
+	owner := &testDatagramPayloadOwner{}
+	require.NoError(t, str.SendDatagramBufferOwned([]byte("payload"), 0, 7, owner))
+	require.Equal(t, 1, owner.releases)
+
+	owner = &testDatagramPayloadOwner{}
+	str.sendDatagramBuffer = func([]byte, int, int) error { return errors.New("send failed") }
+	require.Error(t, str.SendDatagramBufferOwned([]byte("payload"), 0, 7, owner))
+	require.Zero(t, owner.releases, "ownership must remain with caller on error")
+}
+
+func TestStateTrackingStreamSendDatagramBufferOwnedRejectsInvalidRangeWithoutRelease(t *testing.T) {
+	client, _ := newStreamPair(t)
+	str := newStateTrackingStream(client, nil, func([]byte) error { return nil })
+	owner := &testDatagramPayloadOwner{}
+	require.Error(t, str.SendDatagramBufferOwned([]byte("payload"), 2, 6, owner))
+	require.Zero(t, owner.releases)
 }
 
 type mockStreamClearer struct {
@@ -298,6 +352,62 @@ func TestDatagramReceiving(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 }
 
+func TestDatagramReceivingWraparoundFIFO(t *testing.T) {
+	client, _ := newStreamPair(t)
+	str := newStateTrackingStream(client, nil, func([]byte) error { return nil })
+
+	for i := 0; i < streamDatagramQueueLen; i++ {
+		str.enqueueDatagram([]byte{byte(i)})
+	}
+	for i := 0; i < streamDatagramQueueLen/2; i++ {
+		data, err := str.ReceiveDatagram(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, []byte{byte(i)}, data)
+	}
+	for i := streamDatagramQueueLen; i < streamDatagramQueueLen+streamDatagramQueueLen/2; i++ {
+		str.enqueueDatagram([]byte{byte(i)})
+	}
+	for i := streamDatagramQueueLen / 2; i < streamDatagramQueueLen+streamDatagramQueueLen/2; i++ {
+		data, err := str.ReceiveDatagram(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, []byte{byte(i)}, data)
+	}
+}
+
+func TestDatagramReceivingCloseDrainsQueuedDatagrams(t *testing.T) {
+	client, _ := newStreamPair(t)
+	var clearer mockStreamClearer
+	str := newStateTrackingStream(client, &clearer, func([]byte) error { return nil })
+
+	for i := 0; i < streamDatagramQueueLen; i++ {
+		str.enqueueDatagram([]byte{byte(i)})
+	}
+	str.closeReceive(assert.AnError)
+
+	_, err := str.ReceiveDatagram(context.Background())
+	require.ErrorIs(t, err, assert.AnError)
+}
+
+func TestTryReceiveDatagramBufferIsQueueFirstAndNonblocking(t *testing.T) {
+	client, _ := newStreamPair(t)
+	var clearer mockStreamClearer
+	str := newStateTrackingStream(client, &clearer, func([]byte) error { return nil })
+	queued := &quic.DatagramBuffer{Data: []byte("queued")}
+	str.enqueueDatagramBuffer(queued)
+
+	got, err := str.TryReceiveDatagramBuffer()
+	require.NoError(t, err)
+	require.Same(t, queued, got)
+	got.Release()
+
+	_, err = str.TryReceiveDatagramBuffer()
+	require.ErrorIs(t, err, context.Canceled)
+
+	str.closeReceive(assert.AnError)
+	_, err = str.TryReceiveDatagramBuffer()
+	require.ErrorIs(t, err, assert.AnError)
+}
+
 func TestDatagramSending(t *testing.T) {
 	var sendQueue [][]byte
 	errors := []error{nil, nil, assert.AnError}
@@ -316,4 +426,23 @@ func TestDatagramSending(t *testing.T) {
 
 	str.closeSend(net.ErrClosed)
 	require.ErrorIs(t, str.SendDatagram([]byte("foobar")), net.ErrClosed)
+}
+
+func TestStateTrackingStreamSendDatagramBufferForwardsHeadroom(t *testing.T) {
+	client, _ := newStreamPair(t)
+	var clearer mockStreamClearer
+	str := newStateTrackingStream(client, &clearer, func([]byte) error { return nil })
+	var gotBuf []byte
+	var gotOffset, gotLength int
+	str.sendDatagramBuffer = func(buf []byte, offset, length int) error {
+		gotBuf, gotOffset, gotLength = buf, offset, length
+		return nil
+	}
+
+	buf := make([]byte, 8+4)
+	copy(buf[8:], []byte("data"))
+	require.NoError(t, str.SendDatagramBuffer(buf, 8, 4))
+	require.Equal(t, &buf[0], &gotBuf[0])
+	require.Equal(t, 8, gotOffset)
+	require.Equal(t, 4, gotLength)
 }

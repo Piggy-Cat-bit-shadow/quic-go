@@ -3,6 +3,7 @@ package quic
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 
 	"github.com/metacubex/quic-go/internal/utils"
 	"github.com/metacubex/quic-go/internal/utils/ringbuffer"
@@ -10,9 +11,40 @@ import (
 )
 
 const (
-	maxDatagramSendQueueLen = 32
-	maxDatagramRcvQueueLen  = 128
+	maxDatagramSendQueueLen    = 32
+	maxDatagramRcvQueueLen     = 128
+	maxRetainedDatagramBuffers = 64
 )
+
+type datagramRetentionBudget struct {
+	inFlight       atomic.Int32
+	highWater      atomic.Int32
+	fallbackCopies atomic.Int64
+}
+
+func (b *datagramRetentionBudget) tryAcquire() bool {
+	for {
+		n := b.inFlight.Load()
+		if n >= maxRetainedDatagramBuffers {
+			return false
+		}
+		if b.inFlight.CompareAndSwap(n, n+1) {
+			for {
+				high := b.highWater.Load()
+				if n+1 <= high || b.highWater.CompareAndSwap(high, n+1) {
+					break
+				}
+			}
+			return true
+		}
+	}
+}
+
+func (b *datagramRetentionBudget) release() {
+	if n := b.inFlight.Add(-1); n < 0 {
+		panic("negative datagram retention budget")
+	}
+}
 
 type datagramQueue struct {
 	sendMx    sync.Mutex
@@ -20,8 +52,9 @@ type datagramQueue struct {
 	sent      chan struct{} // used to notify Add that a datagram was dequeued
 
 	rcvMx    sync.Mutex
-	rcvQueue [][]byte
+	rcvQueue ringbuffer.RingBuffer[*DatagramBuffer]
 	rcvd     chan struct{} // used to notify Receive that a new datagram was received
+	retained *datagramRetentionBudget
 
 	closeErr error
 	closed   chan struct{}
@@ -32,13 +65,17 @@ type datagramQueue struct {
 }
 
 func newDatagramQueue(hasData func(), logger utils.Logger) *datagramQueue {
-	return &datagramQueue{
-		hasData: hasData,
-		rcvd:    make(chan struct{}, 1),
-		sent:    make(chan struct{}, 1),
-		closed:  make(chan struct{}),
-		logger:  logger,
+	q := &datagramQueue{
+		hasData:  hasData,
+		rcvd:     make(chan struct{}, 1),
+		sent:     make(chan struct{}, 1),
+		closed:   make(chan struct{}),
+		retained: new(datagramRetentionBudget),
+		logger:   logger,
 	}
+	q.sendQueue.Init(maxDatagramSendQueueLen)
+	q.rcvQueue.Init(maxDatagramRcvQueueLen)
+	return q
 }
 
 // Add queues a new DATAGRAM frame for sending.
@@ -48,6 +85,13 @@ func (h *datagramQueue) Add(f *wire.DatagramFrame) error {
 	h.sendMx.Lock()
 
 	for {
+		select {
+		case <-h.closed:
+			err := h.closeErr
+			h.sendMx.Unlock()
+			return err
+		default:
+		}
 		if h.sendQueue.Len() < maxDatagramSendQueueLen {
 			h.sendQueue.PushBack(f)
 			h.sendMx.Unlock()
@@ -89,33 +133,99 @@ func (h *datagramQueue) Pop() {
 	}
 }
 
+// Drop removes the front frame without giving the packet packer ownership.
+// This is used for frames that won't be serialized.
+func (h *datagramQueue) Drop() {
+	h.sendMx.Lock()
+	f := h.sendQueue.PopFront()
+	select {
+	case h.sent <- struct{}{}:
+	default:
+	}
+	h.sendMx.Unlock()
+	if f != nil {
+		f.ReleaseSendOwner()
+	}
+}
+
 // HandleDatagramFrame handles a received DATAGRAM frame.
 func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
-	data := make([]byte, len(f.Data))
-	copy(data, f.Data)
-	var queued bool
+	owner := f.TakeDataOwner()
 	h.rcvMx.Lock()
-	if len(h.rcvQueue) < maxDatagramRcvQueueLen {
-		h.rcvQueue = append(h.rcvQueue, data)
-		queued = true
-		select {
-		case h.rcvd <- struct{}{}:
-		default:
+	if h.rcvQueue.Len() >= maxDatagramRcvQueueLen {
+		h.rcvMx.Unlock()
+		if owner != nil {
+			owner.Release()
+		}
+		if h.logger.Debug() {
+			h.logger.Debugf("Discarding received DATAGRAM frame (%d bytes payload)", len(f.Data))
+		}
+		return
+	}
+
+	var budget *datagramRetentionBudget
+	if owner != nil {
+		if h.retained.tryAcquire() {
+			budget = h.retained
+		} else {
+			// Copy before releasing the packet-buffer owner. The compact copy is
+			// intentionally not backed by either transport buffer pool.
+			f.Data = append([]byte(nil), f.Data...)
+			owner.Release()
+			owner = nil
+			h.retained.fallbackCopies.Add(1)
 		}
 	}
+	b := &DatagramBuffer{Data: f.Data, owner: owner, budget: budget}
+	h.rcvQueue.PushBack(b)
+	select {
+	case h.rcvd <- struct{}{}:
+	default:
+	}
 	h.rcvMx.Unlock()
-	if !queued && h.logger.Debug() {
-		h.logger.Debugf("Discarding received DATAGRAM frame (%d bytes payload)", len(f.Data))
+	return
+}
+
+type DatagramBuffer struct {
+	Data     []byte
+	owner    interface{ Release() }
+	budget   *datagramRetentionBudget
+	released atomic.Bool
+}
+
+func (b *DatagramBuffer) Release() {
+	if b == nil || !b.released.CompareAndSwap(false, true) {
+		return
+	}
+	owner := b.owner
+	budget := b.budget
+	b.owner = nil
+	b.budget = nil
+	b.Data = nil
+	if owner != nil {
+		owner.Release()
+	}
+	if budget != nil {
+		budget.release()
 	}
 }
 
 // Receive gets a received DATAGRAM frame.
 func (h *datagramQueue) Receive(ctx context.Context) ([]byte, error) {
+	b, err := h.ReceiveBuffer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	data := append([]byte(nil), b.Data...)
+	b.Release()
+	return data, nil
+}
+
+func (h *datagramQueue) ReceiveBuffer(ctx context.Context) (*DatagramBuffer, error) {
 	for {
 		h.rcvMx.Lock()
-		if len(h.rcvQueue) > 0 {
-			data := h.rcvQueue[0]
-			h.rcvQueue = h.rcvQueue[1:]
+		if !h.rcvQueue.Empty() {
+			data := h.rcvQueue.PopFront()
 			h.rcvMx.Unlock()
 			return data, nil
 		}
@@ -132,6 +242,22 @@ func (h *datagramQueue) Receive(ctx context.Context) ([]byte, error) {
 }
 
 func (h *datagramQueue) CloseWithError(e error) {
+	h.sendMx.Lock()
 	h.closeErr = e
+	for !h.sendQueue.Empty() {
+		h.sendQueue.PopFront().ReleaseSendOwner()
+	}
+	select {
+	case <-h.closed:
+		h.sendMx.Unlock()
+		return
+	default:
+	}
+	h.rcvMx.Lock()
+	for !h.rcvQueue.Empty() {
+		h.rcvQueue.PopFront().Release()
+	}
+	h.rcvMx.Unlock()
 	close(h.closed)
+	h.sendMx.Unlock()
 }

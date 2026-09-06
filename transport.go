@@ -578,7 +578,7 @@ func (t *Transport) handlePacket(p receivedPacket) {
 				Trigger: qlog.PacketDropHeaderParseError,
 			})
 		}
-		p.buffer.MaybeRelease()
+		p.buffer.releaseRef()
 		return
 	}
 
@@ -621,7 +621,7 @@ func (t *Transport) handlePacket(p receivedPacket) {
 				Trigger: qlog.PacketDropUnknownConnectionID,
 			})
 		}
-		p.buffer.MaybeRelease()
+		p.buffer.releaseRef()
 		return
 	}
 	t.server.handlePacket(p)

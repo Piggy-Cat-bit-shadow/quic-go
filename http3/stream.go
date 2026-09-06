@@ -175,9 +175,68 @@ func (s *Stream) SendDatagram(b []byte) error {
 	return s.datagramStream.SendDatagram(b)
 }
 
+// SendDatagramBuffer sends buf[offset:offset+length] as an HTTP Datagram.
+// When the underlying stream supports headroom, the HTTP/3 quarter-stream ID
+// is prepended in place. Callers must retain ownership until this call returns.
+func (s *Stream) SendDatagramBuffer(buf []byte, offset, length int) error {
+	if b, ok := s.datagramStream.(interface {
+		SendDatagramBuffer([]byte, int, int) error
+	}); ok {
+		return b.SendDatagramBuffer(buf, offset, length)
+	}
+	if offset < 0 || length < 0 || offset > len(buf) || length > len(buf)-offset {
+		return fmt.Errorf("invalid datagram buffer range: offset=%d length=%d buffer=%d", offset, length, len(buf))
+	}
+	return s.SendDatagram(buf[offset : offset+length])
+}
+
+// SendDatagramBufferOwned forwards an explicitly owned buffer without copying
+// it. A nil error transfers ownership to the QUIC connection; on error the
+// caller retains ownership.
+func (s *Stream) SendDatagramBufferOwned(buf []byte, offset, length int, owner quic.DatagramPayloadOwner) error {
+	if sender, ok := s.datagramStream.(interface {
+		SendDatagramBufferOwned([]byte, int, int, quic.DatagramPayloadOwner) error
+	}); ok {
+		return sender.SendDatagramBufferOwned(buf, offset, length, owner)
+	}
+	if offset < 0 || length < 0 || offset > len(buf) || length > len(buf)-offset {
+		return fmt.Errorf("invalid datagram buffer range: offset=%d length=%d buffer=%d", offset, length, len(buf))
+	}
+	err := s.SendDatagram(buf[offset : offset+length])
+	if err == nil && owner != nil {
+		owner.Release()
+	}
+	return err
+}
+
 func (s *Stream) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	// TODO: reject if datagrams are not negotiated (yet)
 	return s.datagramStream.ReceiveDatagram(ctx)
+}
+
+func (s *Stream) ReceiveDatagramBuffer(ctx context.Context) (*quic.DatagramBuffer, error) {
+	if b, ok := s.datagramStream.(interface {
+		ReceiveDatagramBuffer(context.Context) (*quic.DatagramBuffer, error)
+	}); ok {
+		return b.ReceiveDatagramBuffer(ctx)
+	}
+	data, err := s.ReceiveDatagram(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &quic.DatagramBuffer{Data: data}, nil
+}
+
+// TryReceiveDatagramBuffer returns one already-queued HTTP Datagram without
+// waiting for a future datagram. An open stream with an empty queue returns
+// context.Canceled.
+func (s *Stream) TryReceiveDatagramBuffer() (*quic.DatagramBuffer, error) {
+	if b, ok := s.datagramStream.(interface {
+		TryReceiveDatagramBuffer() (*quic.DatagramBuffer, error)
+	}); ok {
+		return b.TryReceiveDatagramBuffer()
+	}
+	return nil, context.Canceled
 }
 
 // A RequestStream is a low-level abstraction representing an HTTP/3 request stream.
@@ -308,11 +367,30 @@ func (s *RequestStream) SendDatagram(b []byte) error {
 	return s.str.SendDatagram(b)
 }
 
+func (s *RequestStream) SendDatagramBuffer(buf []byte, offset, length int) error {
+	return s.str.SendDatagramBuffer(buf, offset, length)
+}
+
+func (s *RequestStream) SendDatagramBufferOwned(buf []byte, offset, length int, owner quic.DatagramPayloadOwner) error {
+	return s.str.SendDatagramBufferOwned(buf, offset, length, owner)
+}
+
 // ReceiveDatagram receives HTTP Datagrams (RFC 9297).
 //
 // It is only possible if HTTP Datagram support was enabled using [Transport.EnableDatagrams].
 func (s *RequestStream) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	return s.str.ReceiveDatagram(ctx)
+}
+
+func (s *RequestStream) ReceiveDatagramBuffer(ctx context.Context) (*quic.DatagramBuffer, error) {
+	return s.str.ReceiveDatagramBuffer(ctx)
+}
+
+// TryReceiveDatagramBuffer returns one already-queued HTTP Datagram without
+// waiting for a future datagram. An open stream with an empty queue returns
+// context.Canceled.
+func (s *RequestStream) TryReceiveDatagramBuffer() (*quic.DatagramBuffer, error) {
+	return s.str.TryReceiveDatagramBuffer()
 }
 
 // SendRequestHeader sends the HTTP request.

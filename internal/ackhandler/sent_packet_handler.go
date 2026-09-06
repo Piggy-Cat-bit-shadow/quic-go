@@ -65,10 +65,11 @@ type alarmTimer struct {
 }
 
 type sentPacketHandler struct {
-	initialPackets   *packetNumberSpace
-	handshakePackets *packetNumberSpace
-	appDataPackets   *packetNumberSpace
-	lostPackets      lostPacketTracker // only for application-data packet number space
+	initialMaxDatagramSize protocol.ByteCount
+	initialPackets         *packetNumberSpace
+	handshakePackets       *packetNumberSpace
+	appDataPackets         *packetNumberSpace
+	lostPackets            lostPacketTracker // only for application-data packet number space
 	// send time of the largest acknowledged packet, across all packet number spaces
 	largestAckedTime monotime.Time
 
@@ -139,6 +140,7 @@ func NewSentPacketHandler(
 	)
 
 	h := &sentPacketHandler{
+		initialMaxDatagramSize:         initialMaxDatagramSize,
 		peerCompletedAddressValidation: pers == protocol.PerspectiveServer,
 		peerAddressValidated:           pers == protocol.PerspectiveClient || clientAddressValidated,
 		initialPackets:                 newPacketNumberSpace(initialPN, false),
@@ -158,6 +160,15 @@ func NewSentPacketHandler(
 		h.ecnTracker = newECNTracker(logger, qlogger)
 	}
 	return h
+}
+
+// SetCubicCongestionControl replaces the active controller with quic-go's
+// native CUBIC implementation, without changing the public dataplane API.
+func (h *sentPacketHandler) SetCubicCongestionControl() {
+	h.congestion = congestion.NewCubicSender(
+		congestion.DefaultClock{}, h.rttStats, h.connStats,
+		h.initialMaxDatagramSize, false, h.qlogger,
+	)
 }
 
 func (h *sentPacketHandler) removeFromBytesInFlight(p *packet) {

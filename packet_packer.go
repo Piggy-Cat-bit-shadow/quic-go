@@ -1001,6 +1001,14 @@ func (p *packetPacker) SetToken(token []byte) {
 	p.token = token
 }
 
+func releaseOwnedDatagrams(frames []ackhandler.Frame) {
+	for _, f := range frames {
+		if d, ok := f.Frame.(*wire.DatagramFrame); ok {
+			d.ReleaseSendOwner()
+		}
+	}
+}
+
 type emptyHandler struct{}
 
 var _ ackhandler.FrameHandler = emptyHandler{}

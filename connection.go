@@ -570,8 +570,7 @@ func (c *Conn) run() (err error) {
 
 		for !c.receivedPackets.Empty() {
 			p := c.receivedPackets.PopFront()
-			p.buffer.Decrement()
-			p.buffer.MaybeRelease()
+			p.buffer.releaseRef()
 		}
 	}()
 
@@ -1048,8 +1047,16 @@ func (c *Conn) handleOnePacket(rp receivedPacket, datagramPayloadChecksum qlog.D
 	c.sentPacketHandler.ReceivedBytes(rp.Size(), rp.rcvTime)
 
 	if wire.IsVersionNegotiationPacket(rp.data) {
-		return false, c.handleVersionNegotiationPacket(rp)
+		err := c.handleVersionNegotiationPacket(rp)
+		rp.buffer.releaseRef()
+		return false, err
 	}
+
+	// Keep the outer packet-processing reference until all coalesced packet
+	// slices have been examined. Individual packet handlers release their own
+	// references, but the loop may still access the shared backing buffer.
+	rp.buffer.Retain()
+	defer rp.buffer.releaseRef()
 
 	var counter uint8
 	var lastConnID protocol.ConnectionID
@@ -1157,7 +1164,6 @@ func (c *Conn) handleOnePacket(rp receivedPacket, datagramPayloadChecksum qlog.D
 		}
 	}
 
-	p.buffer.MaybeRelease()
 	c.blocked = blockModeNone
 	return wasProcessed, nil
 }
@@ -1172,7 +1178,7 @@ func (c *Conn) handleShortHeaderPacket(
 	defer func() {
 		// Put back the packet buffer if the packet wasn't queued for later decryption.
 		if !wasQueued {
-			p.buffer.Decrement()
+			p.buffer.releaseRef()
 		}
 	}()
 
@@ -1250,7 +1256,7 @@ func (c *Conn) handleShortHeaderPacket(
 			})
 		}
 	}
-	isNonProbing, pathChallenge, err := c.handleUnpackedShortHeaderPacket(destConnID, pn, data, p.ecn, p.rcvTime, log)
+	isNonProbing, pathChallenge, err := c.handleUnpackedShortHeaderPacket(destConnID, pn, data, p.ecn, p.rcvTime, log, p.buffer)
 	if err != nil {
 		return false, err
 	}
@@ -1308,7 +1314,7 @@ func (c *Conn) handleLongHeaderPacket(p receivedPacket, hdr *wire.Header, datagr
 	defer func() {
 		// Put back the packet buffer if the packet wasn't queued for later decryption.
 		if !wasQueued {
-			p.buffer.Decrement()
+			p.buffer.releaseRef()
 		}
 	}()
 
@@ -1379,7 +1385,7 @@ func (c *Conn) handleLongHeaderPacket(p receivedPacket, hdr *wire.Header, datagr
 		return false, nil
 	}
 
-	if err := c.handleUnpackedLongHeaderPacket(packet, p.ecn, p.rcvTime, datagramPayloadChecksum, p.Size()); err != nil {
+	if err := c.handleUnpackedLongHeaderPacket(packet, p.ecn, p.rcvTime, datagramPayloadChecksum, p.Size(), p.buffer); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -1641,6 +1647,7 @@ func (c *Conn) handleUnpackedLongHeaderPacket(
 	rcvTime monotime.Time,
 	datagramPayloadChecksum qlog.DatagramPayloadChecksum, // only for logging
 	packetSize protocol.ByteCount, // only for logging
+	buffer *packetBuffer,
 ) error {
 	if !c.receivedFirstPacket {
 		c.receivedFirstPacket = true
@@ -1729,7 +1736,7 @@ func (c *Conn) handleUnpackedLongHeaderPacket(
 			})
 		}
 	}
-	isAckEliciting, _, _, err := c.handleFrames(packet.data, packet.hdr.DestConnectionID, packet.encryptionLevel, log, rcvTime)
+	isAckEliciting, _, _, err := c.handleFrames(packet.data, packet.hdr.DestConnectionID, packet.encryptionLevel, log, rcvTime, buffer)
 	if err != nil {
 		return err
 	}
@@ -1744,12 +1751,13 @@ func (c *Conn) handleUnpackedShortHeaderPacket(
 	ecn protocol.ECN,
 	rcvTime monotime.Time,
 	log func([]qlog.Frame),
+	buffer *packetBuffer,
 ) (isNonProbing bool, pathChallenge *wire.PathChallengeFrame, _ error) {
 	c.lastPacketReceivedTime = rcvTime
 	c.firstAckElicitingPacketAfterIdleSentTime = 0
 	c.keepAlivePingSent = false
 
-	isAckEliciting, isNonProbing, pathChallenge, err := c.handleFrames(data, destConnID, protocol.Encryption1RTT, log, rcvTime)
+	isAckEliciting, isNonProbing, pathChallenge, err := c.handleFrames(data, destConnID, protocol.Encryption1RTT, log, rcvTime, buffer)
 	if err != nil {
 		return false, nil, err
 	}
@@ -1768,6 +1776,7 @@ func (c *Conn) handleFrames(
 	encLevel protocol.EncryptionLevel,
 	log func([]qlog.Frame),
 	rcvTime monotime.Time,
+	buffer *packetBuffer,
 ) (isAckEliciting, isNonProbing bool, pathChallenge *wire.PathChallengeFrame, _ error) {
 	// Only used for tracing.
 	// If we're not tracing, this slice will always remain empty.
@@ -1832,7 +1841,13 @@ func (c *Conn) handleFrames(
 			wire.LogFrame(c.logger, ackFrame, false)
 			handleErr = c.handleAckFrame(ackFrame, encLevel, rcvTime)
 		} else if frameType.IsDatagramFrameType() {
-			datagramFrame, l, err := c.frameParser.ParseDatagramFrame(frameType, data, c.version)
+			var datagramFrame *wire.DatagramFrame
+			var l int
+			if buffer == nil {
+				datagramFrame, l, err = c.frameParser.ParseDatagramFrame(frameType, data, c.version)
+			} else {
+				datagramFrame, l, err = c.frameParser.ParseDatagramFrameBorrowedReusable(frameType, data, c.version)
+			}
 			if err != nil {
 				return false, false, nil, err
 			}
@@ -1846,7 +1861,13 @@ func (c *Conn) handleFrames(
 				continue
 			}
 			wire.LogFrame(c.logger, datagramFrame, false)
+			if buffer != nil {
+				datagramFrame.DataOwner = c.retainDatagramBuffer(buffer)
+			}
 			handleErr = c.handleDatagramFrame(datagramFrame)
+			if owner := datagramFrame.TakeDataOwner(); owner != nil {
+				owner.Release()
+			}
 		} else {
 			frame, l, err := c.frameParser.ParseLessCommonFrame(frameType, data, c.version)
 			if err != nil {
@@ -2139,6 +2160,11 @@ func (c *Conn) handleAckFrame(frame *wire.AckFrame, encLevel protocol.Encryption
 		}
 	}
 	return c.cryptoStreamHandler.SetLargest1RTTAcked(frame.LargestAcked())
+}
+
+func (c *Conn) retainDatagramBuffer(b *packetBuffer) interface{ Release() } {
+	b.Retain()
+	return (*retainedPacketBufferRef)(b)
 }
 
 func (c *Conn) handleDatagramFrame(f *wire.DatagramFrame) error {
@@ -2690,6 +2716,7 @@ func (c *Conn) maybeSendAckOnlyPacket(now monotime.Time) error {
 	}
 	c.logShortHeaderPacket(p, ecn, buf.Len())
 	c.registerPackedShortHeaderPacket(p, ecn, now)
+	releaseOwnedDatagrams(p.Frames)
 	c.sendQueue.Send(buf, 0, ecn)
 	return nil
 }
@@ -2744,6 +2771,7 @@ func (c *Conn) appendOneShortHeaderPacket(buf *packetBuffer, maxSize protocol.By
 	size := buf.Len() - startLen
 	c.logShortHeaderPacket(p, ecn, size)
 	c.registerPackedShortHeaderPacket(p, ecn, now)
+	releaseOwnedDatagrams(p.Frames)
 	return size, nil
 }
 
@@ -2837,6 +2865,12 @@ func (c *Conn) sendPackedCoalescedPacket(packet *coalescedPacket, ecn protocol.E
 		)
 	}
 	c.connIDManager.SentPacket()
+	if packet.shortHdrPacket != nil {
+		releaseOwnedDatagrams(packet.shortHdrPacket.Frames)
+	}
+	for _, p := range packet.longHdrPackets {
+		releaseOwnedDatagrams(p.frames)
+	}
 	c.sendQueue.Send(packet.buffer, 0, ecn)
 	return nil
 }
@@ -3061,12 +3095,48 @@ func (c *Conn) SendDatagram(p []byte) error {
 	return c.datagramQueue.Add(f)
 }
 
+// DatagramPayloadOwner is released exactly once by quic-go after an owned
+// DATAGRAM has been serialized, or when it is dropped or drained on close.
+// A nil error from SendDatagramOwned transfers ownership to quic-go. An error
+// means ownership remains with the caller.
+type DatagramPayloadOwner interface{ Release() }
+
+// SendDatagramOwned queues p without copying it. The caller must not mutate p
+// after this method returns nil, and must release owner itself when an error
+// is returned.
+func (c *Conn) SendDatagramOwned(p []byte, owner DatagramPayloadOwner) error {
+	if !c.supportsDatagrams() {
+		return errors.New("datagram support disabled")
+	}
+	f := &wire.DatagramFrame{DataLenPresent: true}
+	maxDataLen := min(
+		f.MaxDataLen(c.peerParams.MaxDatagramFrameSize, c.version),
+		protocol.ByteCount(c.maxPayloadSizeEstimate.Load()),
+	)
+	if protocol.ByteCount(len(p)) > maxDataLen {
+		return &DatagramTooLargeError{MaxDatagramPayloadSize: int64(maxDataLen)}
+	}
+	f.Data = p
+	f.SendOwner = owner
+	return c.datagramQueue.Add(f)
+}
+
 // ReceiveDatagram gets a message received in a QUIC datagram, as specified in RFC 9221.
 func (c *Conn) ReceiveDatagram(ctx context.Context) ([]byte, error) {
+	b, err := c.ReceiveDatagramBuffer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	data := append([]byte(nil), b.Data...)
+	b.Release()
+	return data, nil
+}
+
+func (c *Conn) ReceiveDatagramBuffer(ctx context.Context) (*DatagramBuffer, error) {
 	if !c.config.EnableDatagrams {
 		return nil, errors.New("datagram support disabled")
 	}
-	return c.datagramQueue.Receive(ctx)
+	return c.datagramQueue.ReceiveBuffer(ctx)
 }
 
 // LocalAddr returns the local address of the QUIC connection.
@@ -3157,6 +3227,15 @@ func (c *Conn) NextConnection(ctx context.Context) (*Conn, error) {
 	case <-c.HandshakeComplete():
 		c.streamsMap.UseResetMaps()
 		return c, nil
+	}
+}
+
+// SetCubicCongestionControl replaces the active controller with quic-go's
+// native CUBIC implementation. It is safe to call after accepting a
+// connection and before application data is sent.
+func (c *Conn) SetCubicCongestionControl() {
+	if h, ok := c.sentPacketHandler.(interface{ SetCubicCongestionControl() }); ok {
+		h.SetCubicCongestionControl()
 	}
 }
 

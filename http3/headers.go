@@ -14,10 +14,10 @@ import (
 
 	"golang.org/x/net/http/httpguts"
 
-	"github.com/quic-go/qpack"
 	"github.com/metacubex/quic-go"
 	"github.com/metacubex/quic-go/http3/qlog"
 	"github.com/metacubex/quic-go/qlogwriter"
+	"github.com/quic-go/qpack"
 )
 
 type qpackError struct{ err error }

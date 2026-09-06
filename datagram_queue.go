@@ -183,7 +183,6 @@ func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
 	default:
 	}
 	h.rcvMx.Unlock()
-	return
 }
 
 type DatagramBuffer struct {

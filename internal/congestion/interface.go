@@ -1,8 +1,8 @@
 package congestion
 
 import (
-	"github.com/quic-go/quic-go/internal/monotime"
-	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/metacubex/quic-go/internal/monotime"
+	"github.com/metacubex/quic-go/internal/protocol"
 )
 
 // A SendAlgorithm performs congestion control

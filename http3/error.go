@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/quic-go/quic-go"
+	"github.com/metacubex/quic-go"
 )
 
 // Error is returned by [Transport.RoundTrip], [Transport.RoundTripOpt], and

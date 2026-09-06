@@ -10,9 +10,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/quic-go/quic-go/internal/monotime"
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/utils"
+	"github.com/metacubex/quic-go/internal/monotime"
+	"github.com/metacubex/quic-go/internal/protocol"
+	"github.com/metacubex/quic-go/internal/utils"
 )
 
 type connCapabilities struct {
@@ -60,7 +60,7 @@ func wrapConn(pc net.PacketConn) (rawConn, error) {
 				if disable, _ := strconv.ParseBool(os.Getenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING")); disable {
 					return
 				}
-				log.Printf("%s. See https://github.com/quic-go/quic-go/wiki/UDP-Buffer-Sizes for details.", err)
+				log.Printf("%s. See https://github.com/metacubex/quic-go/wiki/UDP-Buffer-Sizes for details.", err)
 			})
 		}
 	}
@@ -70,7 +70,7 @@ func wrapConn(pc net.PacketConn) (rawConn, error) {
 				if disable, _ := strconv.ParseBool(os.Getenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING")); disable {
 					return
 				}
-				log.Printf("%s. See https://github.com/quic-go/quic-go/wiki/UDP-Buffer-Sizes for details.", err)
+				log.Printf("%s. See https://github.com/metacubex/quic-go/wiki/UDP-Buffer-Sizes for details.", err)
 			})
 		}
 	}

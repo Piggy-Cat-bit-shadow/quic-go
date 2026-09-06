@@ -9,7 +9,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/quic-go/quic-go"
+	"github.com/metacubex/quic-go"
 
 	"github.com/stretchr/testify/require"
 )

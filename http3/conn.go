@@ -154,9 +154,10 @@ func (c *rawConn) TrackStream(str *quic.Stream) *stateTrackingStream {
 	return hstr
 }
 
-func (c *rawConn) retainEarlyDatagram(id quic.StreamID, offset int, b *quic.DatagramBuffer) bool {
-	c.streamMx.Lock()
-	defer c.streamMx.Unlock()
+// retainEarlyDatagramLocked records a pre-registration DATAGRAM. The caller
+// holds streamMx, making stream lookup and retention one atomic lifecycle
+// decision with TrackStream.
+func (c *rawConn) retainEarlyDatagramLocked(id quic.StreamID, offset int, b *quic.DatagramBuffer) bool {
 	if len(c.earlyDatagrams) >= maxEarlyDatagrams {
 		return false
 	}
@@ -436,13 +437,15 @@ func (c *rawConn) routeDatagram(b *quic.DatagramBuffer) error {
 	streamID := quic.StreamID(4 * quarterStreamID)
 	c.streamMx.Lock()
 	dg, ok := c.streams[streamID]
-	c.streamMx.Unlock()
 	if !ok {
-		if !c.retainEarlyDatagram(streamID, n, b) {
+		retained := c.retainEarlyDatagramLocked(streamID, n, b)
+		c.streamMx.Unlock()
+		if !retained {
 			b.Release()
 		}
 		return nil
 	}
+	c.streamMx.Unlock()
 	b.Data = b.Data[n:]
 	dg.enqueueDatagramBuffer(b)
 	return nil

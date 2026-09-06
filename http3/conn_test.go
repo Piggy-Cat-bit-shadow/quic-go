@@ -472,6 +472,26 @@ func TestEarlyDatagramExpiry(t *testing.T) {
 	require.Empty(t, conn.earlyDatagrams)
 }
 
+func TestTrackedDatagramNeverUsesEarlyRetention(t *testing.T) {
+	clientConn, serverConn := newConnPair(t, withDatagrams())
+	defer clientConn.CloseWithError(0, "")
+	defer serverConn.CloseWithError(0, "")
+	conn := newRawConn(clientConn, true, nil, nopControlStrHandler, nil, nil)
+
+	str0, err := clientConn.OpenStream()
+	require.NoError(t, err)
+	str0.Close()
+	str, err := clientConn.OpenStream()
+	require.NoError(t, err)
+	hstr := conn.TrackStream(str)
+	b := &quic.DatagramBuffer{Data: append(quicvarint.Append(nil, uint64(str.StreamID()/4)), byte(9))}
+	require.NoError(t, conn.routeDatagram(b))
+	require.Empty(t, conn.earlyDatagrams)
+	data, err := hstr.ReceiveDatagram(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []byte{9}, data)
+}
+
 func TestConnDatagramFailures(t *testing.T) {
 	t.Run("invalid varint", func(t *testing.T) {
 		testConnDatagramFailures(t, []byte{128})

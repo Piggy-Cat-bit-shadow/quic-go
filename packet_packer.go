@@ -145,7 +145,9 @@ func (p *packetPacker) HasApplicationDataPending() bool {
 	if source, ok := p.framer.(interface{ HasApplicationPayload() bool }); ok {
 		framerHasPayload = source.HasApplicationPayload()
 	}
-	return framerHasPayload || (p.datagramQueue != nil && p.datagramQueue.HasData())
+	return framerHasPayload ||
+		(p.retransmissionQueue != nil && p.retransmissionQueue.HasData(protocol.Encryption1RTT)) ||
+		(p.datagramQueue != nil && p.datagramQueue.HasData())
 }
 
 var _ packer = &packetPacker{}

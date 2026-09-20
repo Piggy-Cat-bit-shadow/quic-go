@@ -61,6 +61,8 @@ type RuntimeStats struct {
 	GSOWrites                     uint64
 	NonGSOWrites                  uint64
 	GSOSegments                   uint64
+	GSOAttempts                   uint64
+	SingleSegmentGSOAttempts      uint64
 	SegmentsPerWriteAverage       float64
 	SegmentsPerWriteP50           uint64
 	SegmentsPerWriteP90           uint64
@@ -170,6 +172,8 @@ func (c *Conn) updateRuntimeStats() {
 		out.GSOWrites = s.GSOWrites
 		out.NonGSOWrites = s.NonGSOWrites
 		out.GSOSegments = s.GSOSegments
+		out.GSOAttempts = s.GSOAttempts
+		out.SingleSegmentGSOAttempts = s.SingleSegmentAttempts
 		if s.Writes > 0 {
 			out.SegmentsPerWriteAverage = float64(s.GSOSegments+s.NonGSOWrites) / float64(s.Writes)
 		}

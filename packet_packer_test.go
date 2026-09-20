@@ -71,6 +71,13 @@ func newTestPacketPacker(t *testing.T, mockCtrl *gomock.Controller, pers protoco
 	}
 }
 
+func TestHasApplicationDataPendingIncludesOneRTTRetransmission(t *testing.T) {
+	tp := newTestPacketPacker(t, gomock.NewController(t), protocol.PerspectiveServer)
+	require.False(t, tp.packer.HasApplicationDataPending())
+	tp.retransmissionQueue.addAppData(&wire.PingFrame{})
+	require.True(t, tp.packer.HasApplicationDataPending())
+}
+
 // newMockShortHeaderSealer returns a mock short header sealer that seals a short header packet
 func newMockShortHeaderSealer(mockCtrl *gomock.Controller) *mocks.MockShortHeaderSealer {
 	sealer := mocks.NewMockShortHeaderSealer(mockCtrl)

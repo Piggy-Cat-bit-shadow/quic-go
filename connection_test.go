@@ -1963,10 +1963,14 @@ func TestConnectionGSOBatchRespectsSendBudget(t *testing.T) {
 				connection.packer.EXPECT().AppendPacket(gomock.Any(), gomock.Any(), gomock.Any(), Version1).DoAndReturn(
 					func(buf *packetBuffer, _ protocol.ByteCount, _ monotime.Time, _ protocol.Version) (shortHeaderPacket, error) {
 						buf.Data = append(buf.Data, bytes.Repeat([]byte{0x42}, int(maxSize))...)
-						return shortHeaderPacket{PacketNumber: packetNumber, Length: maxSize}, nil
+						return shortHeaderPacket{PacketNumber: packetNumber, Length: maxSize, StreamFrames: []ackhandler.StreamFrame{{}}}, nil
 					})
 			}
-			sender.EXPECT().Send(gomock.Any(), uint16(maxSize), protocol.ECNNon).Do(func(buf *packetBuffer, _ uint16, _ protocol.ECN) {
+			gsoSize := uint16(0)
+			if tc.segments > 1 {
+				gsoSize = uint16(maxSize)
+			}
+			sender.EXPECT().Send(gomock.Any(), gsoSize, protocol.ECNNon).Do(func(buf *packetBuffer, _ uint16, _ protocol.ECN) {
 				require.Equal(t, tc.segments*int(maxSize), len(buf.Data))
 				buf.Release()
 			})
@@ -1983,6 +1987,38 @@ func TestConnectionGSOBatchRespectsSendBudget(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConnectionGSOBatchesCONNECTIPPacketsBelowPMTU(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	sph := mockackhandler.NewMockSentPacketHandler(mockCtrl)
+	sender := NewMockSender(mockCtrl)
+	connection := newServerTestConnection(t, mockCtrl, nil, true,
+		connectionOptSender(sender), connectionOptSentPacketHandler(sph), connectionOptHandshakeConfirmed())
+	connection.conn.mtuDiscoverer = newMTUDiscoverer(utils.NewRTTStats(), 1441, 1441, nil)
+	now := monotime.Now()
+	sph.EXPECT().SendMode(gomock.Any()).Return(ackhandler.SendAny).AnyTimes()
+	sph.EXPECT().ECNMode(true).Return(protocol.ECNNon).AnyTimes()
+	sph.EXPECT().SentPacket(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(3)
+	packetSize := 1280
+	for i := range 3 {
+		connection.packer.EXPECT().AppendPacket(gomock.Any(), gomock.Any(), gomock.Any(), Version1).DoAndReturn(
+			func(buf *packetBuffer, maxSize protocol.ByteCount, _ monotime.Time, _ protocol.Version) (shortHeaderPacket, error) {
+				if i == 0 {
+					require.EqualValues(t, 1441, maxSize)
+				} else {
+					require.EqualValues(t, packetSize, maxSize, "later segment target must match the GSO anchor")
+				}
+				buf.Data = append(buf.Data, bytes.Repeat([]byte{byte(i)}, packetSize)...)
+				return shortHeaderPacket{PacketNumber: protocol.PacketNumber(i + 1), Length: protocol.ByteCount(packetSize), StreamFrames: []ackhandler.StreamFrame{{}}}, nil
+			})
+	}
+	connection.packer.EXPECT().AppendPacket(gomock.Any(), gomock.Any(), gomock.Any(), Version1).Return(shortHeaderPacket{}, errNothingToPack)
+	sender.EXPECT().Send(gomock.Any(), uint16(packetSize), protocol.ECNNon).Do(func(buf *packetBuffer, _ uint16, _ protocol.ECN) {
+		require.Len(t, buf.Data, 3*packetSize)
+		buf.Release()
+	})
+	require.NoError(t, connection.conn.sendPacketsWithGSO(now))
 }
 
 func TestConnectionScheduleSendingCoalescesWakeups(t *testing.T) {
@@ -2316,7 +2352,7 @@ func TestConnectionGSOBatch(t *testing.T) {
 			tc.packer.EXPECT().AppendPacket(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
 				func(buffer *packetBuffer, count protocol.ByteCount, t monotime.Time, version protocol.Version) (shortHeaderPacket, error) {
 					buffer.Data = append(buffer.Data, data...)
-					return shortHeaderPacket{PacketNumber: protocol.PacketNumber(i)}, nil
+					return shortHeaderPacket{PacketNumber: protocol.PacketNumber(i), StreamFrames: []ackhandler.StreamFrame{{}}}, nil
 				},
 			)
 		}
@@ -2388,7 +2424,7 @@ func TestConnectionGSOBatchPacketSize(t *testing.T) {
 			calls = append(calls, tc.packer.EXPECT().AppendPacket(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
 				func(buffer *packetBuffer, count protocol.ByteCount, t monotime.Time, version protocol.Version) (shortHeaderPacket, error) {
 					buffer.Data = append(buffer.Data, data...)
-					return shortHeaderPacket{PacketNumber: protocol.PacketNumber(10 + i)}, nil
+					return shortHeaderPacket{PacketNumber: protocol.PacketNumber(10 + i), StreamFrames: []ackhandler.StreamFrame{{}}}, nil
 				},
 			))
 		}
@@ -2410,7 +2446,7 @@ func TestConnectionGSOBatchPacketSize(t *testing.T) {
 		done := make(chan struct{})
 		gomock.InOrder(
 			tc.sendConn.EXPECT().Write(expectedData, uint16(maxPacketSize), protocol.ECT1),
-			tc.sendConn.EXPECT().Write([]byte("foobar"), uint16(maxPacketSize), protocol.ECT1).DoAndReturn(
+			tc.sendConn.EXPECT().Write([]byte("foobar"), uint16(0), protocol.ECT1).DoAndReturn(
 				func([]byte, uint16, protocol.ECN) error { close(done); return nil },
 			),
 		)
@@ -2475,7 +2511,7 @@ func TestConnectionGSOBatchECN(t *testing.T) {
 					if i == 2 {
 						ecnMode = protocol.ECNCE
 					}
-					return shortHeaderPacket{PacketNumber: protocol.PacketNumber(20 + i)}, nil
+					return shortHeaderPacket{PacketNumber: protocol.PacketNumber(20 + i), StreamFrames: []ackhandler.StreamFrame{{}}}, nil
 				},
 			))
 		}
@@ -2496,7 +2532,7 @@ func TestConnectionGSOBatchECN(t *testing.T) {
 
 		done3 := make(chan struct{})
 		tc.sendConn.EXPECT().Write(expectedData, uint16(maxPacketSize), protocol.ECT1)
-		tc.sendConn.EXPECT().Write([]byte("foobar"), uint16(maxPacketSize), protocol.ECNCE).DoAndReturn(
+		tc.sendConn.EXPECT().Write([]byte("foobar"), uint16(0), protocol.ECNCE).DoAndReturn(
 			func([]byte, uint16, protocol.ECN) error { close(done3); return nil },
 		)
 

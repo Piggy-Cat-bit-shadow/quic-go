@@ -18,31 +18,34 @@ type sender interface {
 }
 
 type queueEntry struct {
-	buf     *packetBuffer
-	gsoSize uint16
-	ecn     protocol.ECN
+	buf        *packetBuffer
+	gsoSize    uint16
+	ecn        protocol.ECN
+	gsoAttempt bool
 }
 
 type sendQueue struct {
-	queue         chan queueEntry
-	closeCalled   chan struct{} // runStopped when Close() is called
-	runStopped    chan struct{} // runStopped when the run loop returns
-	available     chan struct{}
-	conn          sendConn
-	highWater     atomic.Uint64
-	hardBlocks    atomic.Uint64
-	blockedAt     atomic.Int64
-	hardBlockNS   atomic.Uint64
-	enqueued      atomic.Uint64
-	sent          atomic.Uint64
-	enqueuedBytes atomic.Uint64
-	sentBytes     atomic.Uint64
-	writes        atomic.Uint64
-	gsoBytes      atomic.Uint64
-	gsoWrites     atomic.Uint64
-	nonGSOWrites  atomic.Uint64
-	gsoSegments   atomic.Uint64
-	writeSegments [65]atomic.Uint64
+	queue                 chan queueEntry
+	closeCalled           chan struct{} // runStopped when Close() is called
+	runStopped            chan struct{} // runStopped when the run loop returns
+	available             chan struct{}
+	conn                  sendConn
+	highWater             atomic.Uint64
+	hardBlocks            atomic.Uint64
+	blockedAt             atomic.Int64
+	hardBlockNS           atomic.Uint64
+	enqueued              atomic.Uint64
+	sent                  atomic.Uint64
+	enqueuedBytes         atomic.Uint64
+	sentBytes             atomic.Uint64
+	writes                atomic.Uint64
+	gsoBytes              atomic.Uint64
+	gsoWrites             atomic.Uint64
+	nonGSOWrites          atomic.Uint64
+	gsoSegments           atomic.Uint64
+	writeSegments         [65]atomic.Uint64
+	gsoAttempts           atomic.Uint64
+	singleSegmentAttempts atomic.Uint64
 }
 
 type sendQueueRuntimeStats struct {
@@ -64,6 +67,8 @@ type sendQueueRuntimeStats struct {
 	SegmentsPerWriteP99     uint64
 	SegmentsPerWriteMax     uint64
 	SegmentsPerWriteBuckets [65]uint64
+	GSOAttempts             uint64
+	SingleSegmentAttempts   uint64
 }
 
 var _ sender = &sendQueue{}
@@ -84,8 +89,14 @@ func newSendQueue(conn sendConn) sender {
 // Callers need to make sure that there's actually space in the send queue by calling WouldBlock.
 // Otherwise Send will panic.
 func (h *sendQueue) Send(p *packetBuffer, gsoSize uint16, ecn protocol.ECN) {
+	h.SendGSO(p, gsoSize, ecn, false)
+}
+
+// SendGSO records whether the caller attempted a multi-segment GSO batch.
+// A one-segment attempt is still sent as a normal UDP datagram.
+func (h *sendQueue) SendGSO(p *packetBuffer, gsoSize uint16, ecn protocol.ECN, attempted bool) {
 	select {
-	case h.queue <- queueEntry{buf: p, gsoSize: gsoSize, ecn: ecn}:
+	case h.queue <- queueEntry{buf: p, gsoSize: gsoSize, ecn: ecn, gsoAttempt: attempted}:
 		h.enqueued.Add(1)
 		updateAtomicMax(&h.highWater, uint64(len(h.queue)))
 		// clear available channel if we've reached capacity
@@ -139,7 +150,7 @@ func (h *sendQueue) runtimeStats() sendQueueRuntimeStats {
 			}
 		}
 	}
-	stats := sendQueueRuntimeStats{Depth: uint64(len(h.queue)), HighWater: h.highWater.Load(), HardBlocks: h.hardBlocks.Load(), HardBlockedDurationNS: d, Enqueued: h.enqueued.Load(), Sent: h.sent.Load(), EnqueuedBytes: h.enqueuedBytes.Load(), SentBytes: h.sentBytes.Load(), Writes: writes, GSOBytes: h.gsoBytes.Load(), GSOWrites: h.gsoWrites.Load(), NonGSOWrites: h.nonGSOWrites.Load(), GSOSegments: h.gsoSegments.Load(), SegmentsPerWriteP50: p50, SegmentsPerWriteP90: p90, SegmentsPerWriteP99: p99, SegmentsPerWriteMax: maxSegments}
+	stats := sendQueueRuntimeStats{Depth: uint64(len(h.queue)), HighWater: h.highWater.Load(), HardBlocks: h.hardBlocks.Load(), HardBlockedDurationNS: d, Enqueued: h.enqueued.Load(), Sent: h.sent.Load(), EnqueuedBytes: h.enqueuedBytes.Load(), SentBytes: h.sentBytes.Load(), Writes: writes, GSOBytes: h.gsoBytes.Load(), GSOWrites: h.gsoWrites.Load(), NonGSOWrites: h.nonGSOWrites.Load(), GSOSegments: h.gsoSegments.Load(), SegmentsPerWriteP50: p50, SegmentsPerWriteP90: p90, SegmentsPerWriteP99: p99, SegmentsPerWriteMax: maxSegments, GSOAttempts: h.gsoAttempts.Load(), SingleSegmentAttempts: h.singleSegmentAttempts.Load()}
 	for i := range h.writeSegments {
 		stats.SegmentsPerWriteBuckets[i] = h.writeSegments[i].Load()
 	}
@@ -179,6 +190,12 @@ func (h *sendQueue) Run() error {
 			packetBytes := uint64(len(e.buf.Data))
 			h.enqueuedBytes.Add(packetBytes)
 			segments := uint64(1)
+			if e.gsoAttempt {
+				h.gsoAttempts.Add(1)
+				if e.gsoSize == 0 {
+					h.singleSegmentAttempts.Add(1)
+				}
+			}
 			if e.gsoSize > 0 {
 				h.gsoBytes.Add(packetBytes)
 				h.gsoWrites.Add(1)

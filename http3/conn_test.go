@@ -442,7 +442,7 @@ func TestEarlyDatagramBoundsAndRelease(t *testing.T) {
 	defer peerConn.CloseWithError(0, "")
 	conn := newRawConn(localConn, true, nil, nopControlStrHandler, nil, nil)
 
-	for i := 0; i < maxEarlyDatagrams; i++ {
+	for i := range maxEarlyDatagrams {
 		id := quic.StreamID(4 * (i + 1))
 		data := append(quicvarint.Append(nil, uint64(id/4)), byte(i))
 		require.NoError(t, conn.routeDatagram(&quic.DatagramBuffer{Data: data}))

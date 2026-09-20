@@ -119,6 +119,7 @@ type sentPacketHandler struct {
 	spuriousLosses          uint64
 	maxPacketReordering     protocol.PacketNumber
 	maxTimeReordering       time.Duration
+	reorderingEvents        uint64
 	lossEvents              uint64
 	lossByPacket            uint64
 	lossByTime              uint64
@@ -145,6 +146,7 @@ type RuntimeStats struct {
 	SpuriousLosses                uint64
 	MaxPacketReordering           protocol.PacketNumber
 	MaxTimeReordering             time.Duration
+	ReorderingEvents              uint64
 	MinRTT                        time.Duration
 	LatestRTT                     time.Duration
 	SmoothedRTT                   time.Duration
@@ -577,6 +579,9 @@ func (h *sentPacketHandler) detectSpuriousLosses(ack *wire.AckFrame, ackTime mon
 			}
 			packetReordering := h.appDataPackets.history.Difference(ack.LargestAcked(), pn)
 			timeReordering := ackTime.Sub(sendTime)
+			if packetReordering > 0 || timeReordering > 0 {
+				h.reorderingEvents++
+			}
 			maxPacketReordering = max(maxPacketReordering, packetReordering)
 			maxTimeReordering = max(maxTimeReordering, timeReordering)
 			h.spuriousLosses++
@@ -687,6 +692,7 @@ func (h *sentPacketHandler) RuntimeStats() RuntimeStats {
 		SpuriousLosses:                h.spuriousLosses,
 		MaxPacketReordering:           h.maxPacketReordering,
 		MaxTimeReordering:             h.maxTimeReordering,
+		ReorderingEvents:              h.reorderingEvents,
 		MinRTT:                        h.rttStats.MinRTT(),
 		LatestRTT:                     h.rttStats.LatestRTT(),
 		SmoothedRTT:                   h.rttStats.SmoothedRTT(),

@@ -228,28 +228,40 @@ type Conn struct {
 	qlogger   qlogwriter.Recorder
 	logger    utils.Logger
 
-	runtimeStatsMu        sync.RWMutex
-	runtimeStats          RuntimeStats
-	packetsPacked         atomic.Uint64
-	packedBytes           atomic.Uint64
-	pacingWakeups         atomic.Uint64
-	receivedPacketsTotal  atomic.Uint64
-	receivedBytes         atomic.Uint64
-	sendScheduleRequests  atomic.Uint64
-	sendScheduleCoalesced atomic.Uint64
-	schedulerTurns        atomic.Uint64
-	txTurns               atomic.Uint64
-	txPackets             atomic.Uint64
-	txBytes               atomic.Uint64
-	rxTurns               atomic.Uint64
-	rxPackets             atomic.Uint64
-	txYieldRXPending      atomic.Uint64
-	yieldPacing           atomic.Uint64
-	yieldCwnd             atomic.Uint64
-	yieldSendQueue        atomic.Uint64
-	yieldNoData           atomic.Uint64
-	yieldPTO              atomic.Uint64
-	yieldOther            atomic.Uint64
+	runtimeStatsMu              sync.RWMutex
+	runtimeStats                RuntimeStats
+	packetsPacked               atomic.Uint64
+	packedBytes                 atomic.Uint64
+	pacingWakeups               atomic.Uint64
+	receivedPacketsTotal        atomic.Uint64
+	receivedBytes               atomic.Uint64
+	sendScheduleRequests        atomic.Uint64
+	sendScheduleCoalesced       atomic.Uint64
+	schedulerTurns              atomic.Uint64
+	txTurns                     atomic.Uint64
+	txPackets                   atomic.Uint64
+	txBytes                     atomic.Uint64
+	rxTurns                     atomic.Uint64
+	rxPackets                   atomic.Uint64
+	txYieldRXPending            atomic.Uint64
+	yieldPacing                 atomic.Uint64
+	yieldCwnd                   atomic.Uint64
+	yieldSendQueue              atomic.Uint64
+	yieldNoData                 atomic.Uint64
+	yieldPTO                    atomic.Uint64
+	yieldOther                  atomic.Uint64
+	gsoBatchBreakShortPacket    uint64
+	gsoBatchBreakPacing         uint64
+	gsoBatchBreakCwnd           uint64
+	gsoBatchBreakECN            uint64
+	gsoBatchBreakTXTurn         uint64
+	gsoBatchBreakBufferCapacity uint64
+	gsoBatchBreakNoData         uint64
+	gsoBatchBreakSendQueue      uint64
+	fullPMTUPackets             uint64
+	shortPackets                uint64
+	candidateGSOBatchPackets    uint64
+	packedPacketSizeBuckets     [8]uint64
 }
 
 var _ streamSender = &Conn{}
@@ -2718,6 +2730,7 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 			if err != errNothingToPack {
 				return err
 			}
+			c.gsoBatchBreakNoData++
 			if buf.Len() == 0 {
 				c.yieldNoData.Add(1)
 				buf.Release()
@@ -2727,10 +2740,12 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 		} else {
 			packetsInTurn++
 			segments++
+			c.recordGSOPacketSize(size, maxSize, eligible)
 			if segmentSize == 0 && eligible {
 				segmentSize = size
 			}
 			if packetsInTurn >= maxPacketsPerTXTurn {
+				c.gsoBatchBreakTXTurn++
 				dontSendMore = true
 			}
 		}
@@ -2739,10 +2754,12 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 			sendMode := c.sentPacketHandler.SendMode(now)
 			if sendMode == ackhandler.SendPacingLimited {
 				c.yieldPacing.Add(1)
+				c.gsoBatchBreakPacing++
 				c.resetPacingDeadline()
 			}
 			if sendMode != ackhandler.SendAny {
 				if sendMode != ackhandler.SendPacingLimited {
+					c.gsoBatchBreakCwnd++
 					c.recordSendModeYield(sendMode)
 				}
 				dontSendMore = true
@@ -2753,6 +2770,7 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 				AvailablePacingBudget(monotime.Time) protocol.ByteCount
 			}); ok && budgeter.AvailablePacingBudget(now) < max(1, segmentSize) {
 				c.yieldCwnd.Add(1)
+				c.gsoBatchBreakPacing++
 				dontSendMore = true
 			}
 		}
@@ -2765,8 +2783,16 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 		// 2. The last packet appended was a full-size packet
 		// 3. The next packet will have the same ECN marking
 		// 4. We still have enough space for another full-size packet in the buffer
-		if !dontSendMore && segmentSize > 0 && eligible && size == segmentSize && nextECN == ecn && buf.Len()+segmentSize <= buf.Cap() {
-			continue
+		if !dontSendMore {
+			if !eligible || size != segmentSize {
+				c.gsoBatchBreakShortPacket++
+			} else if nextECN != ecn {
+				c.gsoBatchBreakECN++
+			} else if buf.Len()+segmentSize > buf.Cap() {
+				c.gsoBatchBreakBufferCapacity++
+			} else {
+				continue
+			}
 		}
 
 		gsoSize := uint16(0)
@@ -2785,6 +2811,7 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 			return nil
 		}
 		if c.sendQueue.WouldBlock() {
+			c.gsoBatchBreakSendQueue++
 			return nil
 		}
 
@@ -2807,6 +2834,35 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 		segmentSize = 0
 		segments = 0
 	}
+}
+
+func (c *Conn) recordGSOPacketSize(size, pmtu protocol.ByteCount, eligible bool) {
+	if size == pmtu {
+		c.fullPMTUPackets++
+	} else {
+		c.shortPackets++
+	}
+	if eligible {
+		c.candidateGSOBatchPackets++
+	}
+	bucket := 7
+	switch {
+	case size <= 256:
+		bucket = 0
+	case size <= 512:
+		bucket = 1
+	case size <= 768:
+		bucket = 2
+	case size <= 1024:
+		bucket = 3
+	case size <= 1200:
+		bucket = 4
+	case size <= 1280:
+		bucket = 5
+	case size <= 1400:
+		bucket = 6
+	}
+	c.packedPacketSizeBuckets[bucket]++
 }
 
 func (c *Conn) recordSendModeYield(mode ackhandler.SendMode) {

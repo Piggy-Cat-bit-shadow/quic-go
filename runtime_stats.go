@@ -63,6 +63,18 @@ type RuntimeStats struct {
 	GSOSegments                   uint64
 	GSOAttempts                   uint64
 	SingleSegmentGSOAttempts      uint64
+	GSOBatchBreakShortPacket      uint64
+	GSOBatchBreakPacing           uint64
+	GSOBatchBreakCwnd             uint64
+	GSOBatchBreakECN              uint64
+	GSOBatchBreakTXTurn           uint64
+	GSOBatchBreakBufferCapacity   uint64
+	GSOBatchBreakNoData           uint64
+	GSOBatchBreakSendQueue        uint64
+	FullPMTUPackets               uint64
+	ShortPackets                  uint64
+	CandidateGSOBatchPackets      uint64
+	PackedPacketSizeBuckets       [8]uint64
 	SegmentsPerWriteAverage       float64
 	SegmentsPerWriteP50           uint64
 	SegmentsPerWriteP90           uint64
@@ -184,6 +196,18 @@ func (c *Conn) updateRuntimeStats() {
 		out.SegmentsPerWriteBuckets = s.SegmentsPerWriteBuckets
 	}
 	out.ReceivedPacketQueueDrops = c.receivedPacketQueueDrops.Load()
+	out.GSOBatchBreakShortPacket = c.gsoBatchBreakShortPacket
+	out.GSOBatchBreakPacing = c.gsoBatchBreakPacing
+	out.GSOBatchBreakCwnd = c.gsoBatchBreakCwnd
+	out.GSOBatchBreakECN = c.gsoBatchBreakECN
+	out.GSOBatchBreakTXTurn = c.gsoBatchBreakTXTurn
+	out.GSOBatchBreakBufferCapacity = c.gsoBatchBreakBufferCapacity
+	out.GSOBatchBreakNoData = c.gsoBatchBreakNoData
+	out.GSOBatchBreakSendQueue = c.gsoBatchBreakSendQueue
+	out.FullPMTUPackets = c.fullPMTUPackets
+	out.ShortPackets = c.shortPackets
+	out.CandidateGSOBatchPackets = c.candidateGSOBatchPackets
+	out.PackedPacketSizeBuckets = c.packedPacketSizeBuckets
 	out.GSO = c.conn.capabilities().GSO
 	out.PacketsPacked = c.packetsPacked.Load()
 	out.PackedBytes = c.packedBytes.Load()

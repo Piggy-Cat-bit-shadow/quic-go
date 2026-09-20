@@ -44,6 +44,15 @@ type RuntimeStats struct {
 	UDPWrites                     uint64
 	UDPWireBytes                  uint64
 	GSOBytes                      uint64
+	GSOWrites                     uint64
+	NonGSOWrites                  uint64
+	GSOSegments                   uint64
+	SegmentsPerWriteAverage       float64
+	SegmentsPerWriteP50           uint64
+	SegmentsPerWriteP90           uint64
+	SegmentsPerWriteP99           uint64
+	SegmentsPerWriteMax           uint64
+	SegmentsPerWriteBuckets       [65]uint64
 	PacketsPacked                 uint64
 	PackedBytes                   uint64
 	PacingWakeups                 uint64
@@ -130,6 +139,17 @@ func (c *Conn) updateRuntimeStats() {
 		out.UDPWrites = s.Writes
 		out.UDPWireBytes = s.SentBytes
 		out.GSOBytes = s.GSOBytes
+		out.GSOWrites = s.GSOWrites
+		out.NonGSOWrites = s.NonGSOWrites
+		out.GSOSegments = s.GSOSegments
+		if s.Writes > 0 {
+			out.SegmentsPerWriteAverage = float64(s.GSOSegments+s.NonGSOWrites) / float64(s.Writes)
+		}
+		out.SegmentsPerWriteP50 = s.SegmentsPerWriteP50
+		out.SegmentsPerWriteP90 = s.SegmentsPerWriteP90
+		out.SegmentsPerWriteP99 = s.SegmentsPerWriteP99
+		out.SegmentsPerWriteMax = s.SegmentsPerWriteMax
+		out.SegmentsPerWriteBuckets = s.SegmentsPerWriteBuckets
 	}
 	out.ReceivedPacketQueueDrops = c.receivedPacketQueueDrops.Load()
 	out.GSO = c.conn.capabilities().GSO

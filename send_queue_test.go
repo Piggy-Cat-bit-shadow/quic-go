@@ -58,6 +58,51 @@ func TestSendQueueSendOnePacket(t *testing.T) {
 	})
 }
 
+func TestSendQueueRuntimeStatsReportSegmentsPerWrite(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		mockCtrl := gomock.NewController(t)
+		conn := NewMockSendConn(mockCtrl)
+		queue := newSendQueue(conn)
+		written := make(chan struct{}, 2)
+		conn.EXPECT().Write(gomock.Any(), uint16(0), protocol.ECNNon).DoAndReturn(func(data []byte, _ uint16, _ protocol.ECN) error {
+			require.Len(t, data, 1200)
+			written <- struct{}{}
+			return nil
+		})
+		conn.EXPECT().Write(gomock.Any(), uint16(1200), protocol.ECNNon).DoAndReturn(func(data []byte, _ uint16, _ protocol.ECN) error {
+			require.Len(t, data, 2400)
+			written <- struct{}{}
+			return nil
+		})
+		done := make(chan struct{})
+		go func() { _ = queue.Run(); close(done) }()
+		queue.Send(getPacketWithContents(make([]byte, 1200)), 0, protocol.ECNNon)
+		gsoPacket := getLargePacketBuffer()
+		gsoPacket.Data = gsoPacket.Data[:2400]
+		queue.Send(gsoPacket, 1200, protocol.ECNNon)
+		synctest.Wait()
+		for range 2 {
+			select {
+			case <-written:
+			default:
+				t.Fatal("expected both writes to complete")
+			}
+		}
+		stats := queue.(*sendQueue).runtimeStats()
+		require.Equal(t, uint64(2), stats.Writes)
+		require.Equal(t, uint64(1), stats.GSOWrites)
+		require.Equal(t, uint64(1), stats.NonGSOWrites)
+		require.Equal(t, uint64(2), stats.GSOSegments)
+		require.Equal(t, uint64(1), stats.SegmentsPerWriteP50)
+		require.Equal(t, uint64(2), stats.SegmentsPerWriteP90)
+		require.Equal(t, uint64(2), stats.SegmentsPerWriteP99)
+		require.Equal(t, uint64(2), stats.SegmentsPerWriteMax)
+		queue.Close()
+		synctest.Wait()
+		<-done
+	})
+}
+
 func TestSendQueueBlocking(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		mockCtrl := gomock.NewController(t)

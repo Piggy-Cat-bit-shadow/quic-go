@@ -11,31 +11,43 @@ import (
 // aggregate transport state only; it never contains addresses, packet numbers,
 // payloads, or packet-level events.
 type RuntimeStats struct {
-	CongestionController         string
-	CongestionState              string
-	CongestionWindow             uint64
-	BytesInFlight                uint64
-	PacingRate                   uint64
-	MinRTT                       time.Duration
-	LatestRTT                    time.Duration
-	SmoothedRTT                  time.Duration
-	PacketsLost                  uint64
-	BytesLost                    uint64
-	SpuriousLosses               uint64
-	MaxPacketReordering          uint64
-	MaxTimeReordering            time.Duration
-	DatagramSendQueueDepth       uint64
-	DatagramSendQueueHighWater   uint64
-	DatagramSendBlocked          uint64
-	DatagramSendBlockedDuration  time.Duration
-	SendQueueDepth               uint64
-	SendQueueHighWater           uint64
-	SendQueueHardBlocks          uint64
-	SendQueueHardBlockedDuration time.Duration
-	ReceivedPacketQueueDrops     uint64
-	ReceivedDatagramQueueDrops   uint64
-	CurrentPMTU                  uint64
-	GSO                          bool
+	CongestionController          string
+	CongestionState               string
+	CongestionWindow              uint64
+	BytesInFlight                 uint64
+	PacingRate                    uint64
+	MinRTT                        time.Duration
+	LatestRTT                     time.Duration
+	SmoothedRTT                   time.Duration
+	PacketsLost                   uint64
+	BytesLost                     uint64
+	SpuriousLosses                uint64
+	MaxPacketReordering           uint64
+	MaxTimeReordering             time.Duration
+	DatagramSendQueueDepth        uint64
+	DatagramSendQueueHighWater    uint64
+	DatagramSendBlocked           uint64
+	DatagramSendBlockedDuration   time.Duration
+	DatagramSendEnqueue           uint64
+	DatagramSendDequeue           uint64
+	DatagramSendEnqueueBytes      uint64
+	DatagramSendDequeueBytes      uint64
+	DatagramQueueNonEmptyDuration time.Duration
+	SendQueueDepth                uint64
+	SendQueueHighWater            uint64
+	SendQueueHardBlocks           uint64
+	SendQueueHardBlockedDuration  time.Duration
+	SendQueueEnqueue              uint64
+	SendQueueDequeue              uint64
+	SendQueueEnqueueBytes         uint64
+	SendQueueDequeueBytes         uint64
+	UDPWrites                     uint64
+	UDPWireBytes                  uint64
+	GSOBytes                      uint64
+	ReceivedPacketQueueDrops      uint64
+	ReceivedDatagramQueueDrops    uint64
+	CurrentPMTU                   uint64
+	GSO                           bool
 }
 
 func updateAtomicMax(dst *atomic.Uint64, value uint64) {
@@ -76,6 +88,11 @@ func (c *Conn) updateRuntimeStats() {
 		out.DatagramSendQueueHighWater = q.SendHighWater
 		out.DatagramSendBlocked = q.SendBlocked
 		out.DatagramSendBlockedDuration = time.Duration(q.SendBlockedDurationNS)
+		out.DatagramSendEnqueue = q.SendEnqueue
+		out.DatagramSendDequeue = q.SendDequeue
+		out.DatagramSendEnqueueBytes = q.SendEnqueueBytes
+		out.DatagramSendDequeueBytes = q.SendDequeueBytes
+		out.DatagramQueueNonEmptyDuration = time.Duration(q.NonEmptyDurationNS)
 		out.ReceivedDatagramQueueDrops = q.ReceiveDrops
 	}
 	if q, ok := c.sendQueue.(*sendQueue); ok {
@@ -84,6 +101,13 @@ func (c *Conn) updateRuntimeStats() {
 		out.SendQueueHighWater = s.HighWater
 		out.SendQueueHardBlocks = s.HardBlocks
 		out.SendQueueHardBlockedDuration = time.Duration(s.HardBlockedDurationNS)
+		out.SendQueueEnqueue = s.Enqueued
+		out.SendQueueDequeue = s.Sent
+		out.SendQueueEnqueueBytes = s.EnqueuedBytes
+		out.SendQueueDequeueBytes = s.SentBytes
+		out.UDPWrites = s.Writes
+		out.UDPWireBytes = s.SentBytes
+		out.GSOBytes = s.GSOBytes
 	}
 	out.ReceivedPacketQueueDrops = c.receivedPacketQueueDrops.Load()
 	out.GSO = c.conn.capabilities().GSO

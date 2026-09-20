@@ -66,17 +66,26 @@ type datagramQueue struct {
 
 	hasData func()
 
-	logger        utils.Logger
-	sendHighWater atomic.Uint64
-	sendBlocked   atomic.Uint64
-	sendBlockedNS atomic.Uint64
-	receiveDrops  atomic.Uint64
+	logger           utils.Logger
+	sendHighWater    atomic.Uint64
+	sendBlocked      atomic.Uint64
+	sendBlockedNS    atomic.Uint64
+	receiveDrops     atomic.Uint64
+	sendEnqueue      atomic.Uint64
+	sendDequeue      atomic.Uint64
+	sendEnqueueBytes atomic.Uint64
+	sendDequeueBytes atomic.Uint64
+	nonEmptyNS       atomic.Uint64
+	nonEmptyAt       atomic.Int64
 }
 
 type datagramQueueRuntimeStats struct {
 	SendDepth, SendHighWater, SendBlocked uint64
 	SendBlockedDurationNS                 uint64
 	ReceiveDepth, ReceiveDrops            uint64
+	SendEnqueue, SendDequeue              uint64
+	SendEnqueueBytes, SendDequeueBytes    uint64
+	NonEmptyDurationNS                    uint64
 }
 
 func newDatagramQueue(hasData func(), logger utils.Logger) *datagramQueue {
@@ -108,7 +117,13 @@ func (h *datagramQueue) Add(f *wire.DatagramFrame) error {
 		default:
 		}
 		if h.sendQueue.Len() < maxDatagramSendQueueLen {
+			wasEmpty := h.sendQueue.Empty()
 			h.sendQueue.PushBack(f)
+			h.sendEnqueue.Add(1)
+			h.sendEnqueueBytes.Add(uint64(len(f.Data)))
+			if wasEmpty {
+				h.nonEmptyAt.Store(time.Now().UnixNano())
+			}
 			updateAtomicMax(&h.sendHighWater, uint64(h.sendQueue.Len()))
 			h.sendMx.Unlock()
 			h.hasData()
@@ -145,7 +160,14 @@ func (h *datagramQueue) Peek() *wire.DatagramFrame {
 func (h *datagramQueue) Pop() {
 	h.sendMx.Lock()
 	defer h.sendMx.Unlock()
-	_ = h.sendQueue.PopFront()
+	f := h.sendQueue.PopFront()
+	if f != nil {
+		h.sendDequeue.Add(1)
+		h.sendDequeueBytes.Add(uint64(len(f.Data)))
+	}
+	if h.sendQueue.Empty() {
+		h.closeNonEmptyWindow()
+	}
 	select {
 	case h.sent <- struct{}{}:
 	default:
@@ -157,6 +179,13 @@ func (h *datagramQueue) Pop() {
 func (h *datagramQueue) Drop() {
 	h.sendMx.Lock()
 	f := h.sendQueue.PopFront()
+	if f != nil {
+		h.sendDequeue.Add(1)
+		h.sendDequeueBytes.Add(uint64(len(f.Data)))
+	}
+	if h.sendQueue.Empty() {
+		h.closeNonEmptyWindow()
+	}
 	select {
 	case h.sent <- struct{}{}:
 	default:
@@ -212,10 +241,23 @@ func (h *datagramQueue) runtimeStats() datagramQueueRuntimeStats {
 	h.rcvMx.Lock()
 	receiveDepth := uint64(h.rcvQueue.Len())
 	h.rcvMx.Unlock()
+	nonEmpty := h.nonEmptyNS.Load()
+	if started := h.nonEmptyAt.Load(); started != 0 {
+		nonEmpty += uint64(max(0, time.Now().UnixNano()-started))
+	}
 	return datagramQueueRuntimeStats{
 		SendDepth: sendDepth, SendHighWater: h.sendHighWater.Load(),
 		SendBlocked: h.sendBlocked.Load(), SendBlockedDurationNS: h.sendBlockedNS.Load(),
 		ReceiveDepth: receiveDepth, ReceiveDrops: h.receiveDrops.Load(),
+		SendEnqueue: h.sendEnqueue.Load(), SendDequeue: h.sendDequeue.Load(),
+		SendEnqueueBytes: h.sendEnqueueBytes.Load(), SendDequeueBytes: h.sendDequeueBytes.Load(),
+		NonEmptyDurationNS: nonEmpty,
+	}
+}
+
+func (h *datagramQueue) closeNonEmptyWindow() {
+	if started := h.nonEmptyAt.Swap(0); started != 0 {
+		h.nonEmptyNS.Add(uint64(max(0, time.Now().UnixNano()-started)))
 	}
 }
 

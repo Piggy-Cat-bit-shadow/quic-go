@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,10 @@ import (
 )
 
 func nopControlStrHandler(*quic.ReceiveStream, *frameParser) {}
+
+type atomicDatagramOwner struct{ releases atomic.Int32 }
+
+func (o *atomicDatagramOwner) Release() { o.releases.Add(1) }
 
 func TestConnReceiveSettings(t *testing.T) {
 	var eventRecorder events.Recorder
@@ -434,6 +439,16 @@ func TestConnSendAndReceiveDatagram(t *testing.T) {
 	data, err = serverConn.ReceiveDatagram(ctx)
 	require.NoError(t, err)
 	require.Equal(t, expected, data)
+
+	owned := []byte{0, 0, 'b', 'a', 't', 'c', 'h'}
+	owner := new(atomicDatagramOwner)
+	accepted, err := datagramStr.TrySendDatagramBufferOwned(owned, 2, 5, owner)
+	require.NoError(t, err)
+	require.True(t, accepted)
+	data, err = serverConn.ReceiveDatagram(ctx)
+	require.NoError(t, err)
+	require.Equal(t, append(quarterStreamID, []byte("batch")...), data)
+	require.Eventually(t, func() bool { return owner.releases.Load() == 1 }, time.Second, time.Millisecond)
 }
 
 func TestEarlyDatagramBoundsAndRelease(t *testing.T) {

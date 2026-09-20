@@ -63,7 +63,7 @@ func TestSendQueueRuntimeStatsReportSegmentsPerWrite(t *testing.T) {
 		mockCtrl := gomock.NewController(t)
 		conn := NewMockSendConn(mockCtrl)
 		queue := newSendQueue(conn)
-		written := make(chan struct{}, 2)
+		written := make(chan struct{}, 3)
 		conn.EXPECT().Write(gomock.Any(), uint16(0), protocol.ECNNon).DoAndReturn(func(data []byte, _ uint16, _ protocol.ECN) error {
 			require.Len(t, data, 1200)
 			written <- struct{}{}
@@ -74,14 +74,20 @@ func TestSendQueueRuntimeStatsReportSegmentsPerWrite(t *testing.T) {
 			written <- struct{}{}
 			return nil
 		})
+		conn.EXPECT().Write(gomock.Any(), uint16(0), protocol.ECNNon).DoAndReturn(func(data []byte, _ uint16, _ protocol.ECN) error {
+			require.Len(t, data, 1200)
+			written <- struct{}{}
+			return nil
+		})
 		done := make(chan struct{})
 		go func() { _ = queue.Run(); close(done) }()
 		queue.Send(getPacketWithContents(make([]byte, 1200)), 0, protocol.ECNNon)
 		gsoPacket := getLargePacketBuffer()
 		gsoPacket.Data = gsoPacket.Data[:2400]
-		queue.Send(gsoPacket, 1200, protocol.ECNNon)
+		queue.(*sendQueue).SendGSO(gsoPacket, 1200, protocol.ECNNon, true)
+		queue.(*sendQueue).SendGSO(getPacketWithContents(make([]byte, 1200)), 0, protocol.ECNNon, true)
 		synctest.Wait()
-		for range 2 {
+		for range 3 {
 			select {
 			case <-written:
 			default:
@@ -89,10 +95,12 @@ func TestSendQueueRuntimeStatsReportSegmentsPerWrite(t *testing.T) {
 			}
 		}
 		stats := queue.(*sendQueue).runtimeStats()
-		require.Equal(t, uint64(2), stats.Writes)
+		require.Equal(t, uint64(3), stats.Writes)
 		require.Equal(t, uint64(1), stats.GSOWrites)
-		require.Equal(t, uint64(1), stats.NonGSOWrites)
+		require.Equal(t, uint64(2), stats.NonGSOWrites)
 		require.Equal(t, uint64(2), stats.GSOSegments)
+		require.Equal(t, uint64(2), stats.GSOAttempts)
+		require.Equal(t, uint64(1), stats.SingleSegmentAttempts)
 		require.Equal(t, uint64(1), stats.SegmentsPerWriteP50)
 		require.Equal(t, uint64(2), stats.SegmentsPerWriteP90)
 		require.Equal(t, uint64(2), stats.SegmentsPerWriteP99)

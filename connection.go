@@ -2795,6 +2795,8 @@ func (c *Conn) recordSendModeYield(mode ackhandler.SendMode) {
 		c.yieldPacing.Add(1)
 	case ackhandler.SendPTOInitial, ackhandler.SendPTOHandshake, ackhandler.SendPTOAppData:
 		c.yieldPTO.Add(1)
+	case ackhandler.SendAny:
+		c.yieldOther.Add(1)
 	default:
 		c.yieldOther.Add(1)
 	}

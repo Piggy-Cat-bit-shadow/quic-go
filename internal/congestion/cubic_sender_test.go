@@ -140,7 +140,7 @@ func TestCubicAvailablePacingBudgetIsCappedByPacerAndCWND(t *testing.T) {
 	sender := newTestCubicSender(false)
 	sender.clock.Advance(time.Millisecond) // monotime zero is reserved as an unset pacer timestamp
 	now := sender.clock.Now()
-	maxPacket := protocol.ByteCount(maxDatagramSize)
+	maxPacket := maxDatagramSize
 	sender.sender.pacer.adjustedBandwidth = func() uint64 { return uint64(5000 * maxPacket) }
 	require.Equal(t, 10*maxPacket, sender.sender.AvailablePacingBudget(now, 0))
 	require.Equal(t, 2*maxPacket, sender.sender.AvailablePacingBudget(now, sender.sender.GetCongestionWindow()-2*maxPacket))

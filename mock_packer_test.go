@@ -26,8 +26,6 @@ type MockPacker struct {
 	isgomock struct{}
 }
 
-func (m *MockPacker) HasApplicationDataPending() bool { return false }
-
 // MockPackerMockRecorder is the mock recorder for MockPacker.
 type MockPackerMockRecorder struct {
 	mock *MockPacker
@@ -80,6 +78,44 @@ func (c *MockPackerAppendPacketCall) Do(f func(*packetBuffer, protocol.ByteCount
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockPackerAppendPacketCall) DoAndReturn(f func(*packetBuffer, protocol.ByteCount, monotime.Time, protocol.Version) (shortHeaderPacket, error)) *MockPackerAppendPacketCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// HasApplicationDataPending mocks base method.
+func (m *MockPacker) HasApplicationDataPending() bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "HasApplicationDataPending")
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// HasApplicationDataPending indicates an expected call of HasApplicationDataPending.
+func (mr *MockPackerMockRecorder) HasApplicationDataPending() *MockPackerHasApplicationDataPendingCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "HasApplicationDataPending", reflect.TypeOf((*MockPacker)(nil).HasApplicationDataPending))
+	return &MockPackerHasApplicationDataPendingCall{Call: call}
+}
+
+// MockPackerHasApplicationDataPendingCall wrap *gomock.Call
+type MockPackerHasApplicationDataPendingCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockPackerHasApplicationDataPendingCall) Return(arg0 bool) *MockPackerHasApplicationDataPendingCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockPackerHasApplicationDataPendingCall) Do(f func() bool) *MockPackerHasApplicationDataPendingCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockPackerHasApplicationDataPendingCall) DoAndReturn(f func() bool) *MockPackerHasApplicationDataPendingCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

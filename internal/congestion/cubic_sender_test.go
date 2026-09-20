@@ -156,6 +156,19 @@ func TestCubicSenderApplicationLimitedSlowStart(t *testing.T) {
 	require.Equal(t, defaultWindowTCP+maxDatagramSize*2*2, bytesToSend)
 }
 
+func TestCubicSenderDoesNotResetEpochWhenApplicationDataIsPending(t *testing.T) {
+	s := newTestCubicSender(true).sender
+	epoch := monotime.Now()
+	s.cubic.epoch = epoch
+	s.SetApplicationDataPending(true)
+	s.maybeIncreaseCwnd(1, maxDatagramSize, 0, epoch.Add(time.Millisecond))
+	require.Equal(t, epoch, s.cubic.epoch)
+
+	s.SetApplicationDataPending(false)
+	s.maybeIncreaseCwnd(1, maxDatagramSize, 0, epoch.Add(2*time.Millisecond))
+	require.Zero(t, s.cubic.epoch)
+}
+
 func TestCubicSenderExponentialSlowStart(t *testing.T) {
 	sender := newTestCubicSender(false)
 

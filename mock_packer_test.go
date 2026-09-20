@@ -26,6 +26,8 @@ type MockPacker struct {
 	isgomock struct{}
 }
 
+func (m *MockPacker) HasApplicationDataPending() bool { return false }
+
 // MockPackerMockRecorder is the mock recorder for MockPacker.
 type MockPackerMockRecorder struct {
 	mock *MockPacker

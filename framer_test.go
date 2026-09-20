@@ -40,6 +40,27 @@ func TestFramerControlFrames(t *testing.T) {
 	require.False(t, framer.HasData())
 }
 
+func TestFramerHasApplicationPayload(t *testing.T) {
+	f := newFramer(newConnectionFlowController(0, 0, nil, nil, nil))
+	f.QueueControlFrame(&wire.PingFrame{})
+	require.False(t, f.HasApplicationPayload(), "control-only work isn't application payload")
+
+	stream := &SendStream{dataForWriting: []byte("payload")}
+	f.AddActiveStream(0, stream)
+	require.True(t, f.HasApplicationPayload())
+
+	stream.mutex.Lock()
+	stream.dataForWriting = nil
+	stream.finishedWriting = true // FIN-only work
+	stream.mutex.Unlock()
+	require.False(t, f.HasApplicationPayload())
+
+	stream.mutex.Lock()
+	stream.retransmissionQueue = []*wire.StreamFrame{{Data: []byte("retry")}}
+	stream.mutex.Unlock()
+	require.True(t, f.HasApplicationPayload(), "stream retransmission payload remains pending")
+}
+
 func TestFramerControlFrameSizing(t *testing.T) {
 	const maxSize = protocol.ByteCount(1000)
 	bf := &wire.DataBlockedFrame{MaximumData: 0x1337}

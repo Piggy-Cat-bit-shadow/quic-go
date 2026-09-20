@@ -42,6 +42,7 @@ type cubicSender struct {
 	// Whether the last loss event caused us to exit slowstart.
 	// Used for stats collection of slowstartPacketsLost
 	lastCutbackExitedSlowstart bool
+	applicationDataPending     bool
 
 	// Congestion window in bytes.
 	congestionWindow protocol.ByteCount
@@ -242,8 +243,10 @@ func (c *cubicSender) maybeIncreaseCwnd(
 	// Do not increase the congestion window unless the sender is close to using
 	// the current window.
 	if !c.isCwndLimited(priorInFlight) {
-		c.cubic.OnApplicationLimited()
-		c.maybeQlogStateChange(qlog.CongestionStateApplicationLimited)
+		if !c.applicationDataPending {
+			c.cubic.OnApplicationLimited()
+			c.maybeQlogStateChange(qlog.CongestionStateApplicationLimited)
+		}
 		return
 	}
 	if c.congestionWindow >= c.maxCongestionWindow() {
@@ -270,6 +273,10 @@ func (c *cubicSender) maybeIncreaseCwnd(
 			c.cubic.CongestionWindowAfterAck(ackedBytes, c.congestionWindow, c.rttStats.MinRTT(), eventTime),
 		)
 	}
+}
+
+func (c *cubicSender) SetApplicationDataPending(pending bool) {
+	c.applicationDataPending = pending
 }
 
 func (c *cubicSender) isCwndLimited(bytesInFlight protocol.ByteCount) bool {

@@ -90,9 +90,10 @@ type sentPacketHandler struct {
 
 	bytesInFlight protocol.ByteCount
 
-	congestion congestion.SendAlgorithmWithDebugInfos
-	rttStats   *utils.RTTStats
-	connStats  *utils.ConnectionStats
+	congestion             congestion.SendAlgorithmWithDebugInfos
+	applicationDataPending func() bool
+	rttStats               *utils.RTTStats
+	connStats              *utils.ConnectionStats
 
 	// The number of times a PTO has been sent without receiving an ack.
 	ptoCount uint32
@@ -472,6 +473,9 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 	var acked1RTTPacket bool
 	for _, p := range ackedPackets {
 		if p.includedInBytesInFlight {
+			if cc, ok := h.congestion.(congestion.SendAlgorithmApplicationDataPending); ok && h.applicationDataPending != nil {
+				cc.SetApplicationDataPending(h.applicationDataPending())
+			}
 			h.congestion.OnPacketAcked(p.PacketNumber, p.Length, priorInFlight, rcvTime)
 		}
 		if p.EncryptionLevel == protocol.Encryption1RTT {
@@ -514,6 +518,12 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 
 	h.setLossDetectionTimer(rcvTime)
 	return acked1RTTPacket, nil
+}
+
+// SetApplicationDataPendingFunc supplies transport-wide pending application
+// work to congestion controllers. It is called synchronously on ACK handling.
+func (h *sentPacketHandler) SetApplicationDataPendingFunc(f func() bool) {
+	h.applicationDataPending = f
 }
 
 func (h *sentPacketHandler) detectSpuriousLosses(ack *wire.AckFrame, ackTime monotime.Time) {

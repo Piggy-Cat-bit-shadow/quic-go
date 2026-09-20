@@ -531,6 +531,20 @@ func (s *SendStream) popRetransmissionFrame(maxBytes protocol.ByteCount, v proto
 	return ackhandler.StreamFrame{Frame: f, Handler: (*sendStreamAckHandler)(s)}, hasMore
 }
 
+func (s *SendStream) hasPendingPayload() bool {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if len(s.dataForWriting) > 0 || (s.nextFrame != nil && s.nextFrame.DataLen() > 0) {
+		return true
+	}
+	for _, frame := range s.retransmissionQueue {
+		if frame != nil && frame.DataLen() > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *SendStream) getDataForWriting(f *wire.StreamFrame, maxBytes protocol.ByteCount) {
 	if protocol.ByteCount(len(s.dataForWriting)) <= maxBytes {
 		f.Data = f.Data[:len(s.dataForWriting)]

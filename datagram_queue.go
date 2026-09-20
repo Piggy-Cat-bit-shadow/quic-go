@@ -157,6 +157,12 @@ func (h *datagramQueue) Peek() *wire.DatagramFrame {
 	return h.sendQueue.PeekFront()
 }
 
+func (h *datagramQueue) HasData() bool {
+	h.sendMx.Lock()
+	defer h.sendMx.Unlock()
+	return !h.sendQueue.Empty()
+}
+
 func (h *datagramQueue) Pop() {
 	h.sendMx.Lock()
 	defer h.sendMx.Unlock()

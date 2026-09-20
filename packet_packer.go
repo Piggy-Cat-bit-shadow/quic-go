@@ -28,6 +28,7 @@ type packer interface {
 	PackMTUProbePacket(ping ackhandler.Frame, size protocol.ByteCount, v protocol.Version) (shortHeaderPacket, *packetBuffer, error)
 
 	SetToken([]byte)
+	HasApplicationDataPending() bool
 }
 
 type sealer interface {
@@ -135,6 +136,16 @@ type packetPacker struct {
 	rand                rand.Rand
 
 	numNonAckElicitingAcks int
+}
+
+// HasApplicationDataPending reports payload or retransmission work that the
+// packet packer could send. It intentionally excludes ACK-only work.
+func (p *packetPacker) HasApplicationDataPending() bool {
+	framerHasPayload := false
+	if source, ok := p.framer.(interface{ HasApplicationPayload() bool }); ok {
+		framerHasPayload = source.HasApplicationPayload()
+	}
+	return framerHasPayload || (p.datagramQueue != nil && p.datagramQueue.HasData())
 }
 
 var _ packer = &packetPacker{}

@@ -101,6 +101,25 @@ func (f *framer) HasData() bool {
 	return false
 }
 
+// HasApplicationPayload reports only queued stream payload. Control frames
+// (including FIN-only stream state) don't make an otherwise idle application
+// look continuously active to congestion control.
+func (f *framer) HasApplicationPayload() bool {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	for _, stream := range f.activeStreams {
+		if pending, ok := stream.streamFrameGetter.(interface{ hasPendingPayload() bool }); ok && pending.hasPendingPayload() {
+			return true
+		}
+	}
+	for _, stream := range f.retransmissionStreams {
+		if pending, ok := stream.(interface{ hasPendingPayload() bool }); ok && pending.hasPendingPayload() {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *framer) QueueControlFrame(frame wire.Frame) {
 	f.controlFrameMutex.Lock()
 	defer f.controlFrameMutex.Unlock()

@@ -32,3 +32,9 @@ type SendAlgorithmRuntimeStats interface {
 	GetPacingRate() uint64
 	GetCongestionControllerName() string
 }
+
+// SendAlgorithmApplicationDataPending is implemented by controllers whose
+// epoch logic distinguishes an idle application from a transport-limited one.
+type SendAlgorithmApplicationDataPending interface {
+	SetApplicationDataPending(bool)
+}

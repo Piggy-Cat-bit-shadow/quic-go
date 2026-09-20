@@ -75,7 +75,6 @@ func (h *sendQueue) Send(p *packetBuffer, gsoSize uint16, ecn protocol.ECN) {
 	select {
 	case h.queue <- queueEntry{buf: p, gsoSize: gsoSize, ecn: ecn}:
 		h.enqueued.Add(1)
-		h.enqueuedBytes.Add(uint64(len(p.Data)))
 		updateAtomicMax(&h.highWater, uint64(len(h.queue)))
 		// clear available channel if we've reached capacity
 		if len(h.queue) == sendQueueCapacity {
@@ -137,9 +136,11 @@ func (h *sendQueue) Run() error {
 			shouldClose = true
 		case e := <-h.queue:
 			h.clearBlocked()
+			packetBytes := uint64(len(e.buf.Data))
+			h.enqueuedBytes.Add(packetBytes)
 			h.writes.Add(1)
 			if e.gsoSize > 0 {
-				h.gsoBytes.Add(uint64(len(e.buf.Data)))
+				h.gsoBytes.Add(packetBytes)
 			}
 			if err := h.conn.Write(e.buf.Data, e.gsoSize, e.ecn); err != nil {
 				// This additional check enables:
@@ -151,7 +152,7 @@ func (h *sendQueue) Run() error {
 				}
 			}
 			h.sent.Add(1)
-			h.sentBytes.Add(uint64(len(e.buf.Data)))
+			h.sentBytes.Add(packetBytes)
 			e.buf.Release()
 			select {
 			case h.available <- struct{}{}:

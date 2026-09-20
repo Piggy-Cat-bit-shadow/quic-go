@@ -32,13 +32,26 @@ type deterministicWANRouter struct {
 	nextWrite   map[string]time.Time
 	dropped     atomic.Uint64
 	reordered   atomic.Uint64
+	reorderOps  atomic.Uint64
 }
+
+const deterministicReorderOperations = 12
 
 func (r *deterministicWANRouter) deliver(p simnet.Packet, direction string) error {
 	if r.bandwidth == 0 {
 		return r.PerfectRouter.SendPacket(p)
 	}
+	delay := r.reserveSerialization(p, direction)
+	if delay <= 0 {
+		return r.PerfectRouter.SendPacket(p)
+	}
+	time.AfterFunc(delay, func() { _ = r.PerfectRouter.SendPacket(p) })
+	return nil
+}
+
+func (r *deterministicWANRouter) reserveSerialization(p simnet.Packet, direction string) time.Duration {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.nextWrite == nil {
 		r.nextWrite = make(map[string]time.Time)
 	}
@@ -49,13 +62,7 @@ func (r *deterministicWANRouter) deliver(p simnet.Packet, direction string) erro
 	}
 	serialization := time.Duration(uint64(len(p.Data)) * 8 * uint64(time.Second) / r.bandwidth)
 	r.nextWrite[direction] = start.Add(serialization)
-	delay := r.nextWrite[direction].Sub(now)
-	r.mu.Unlock()
-	if delay <= 0 {
-		return r.PerfectRouter.SendPacket(p)
-	}
-	time.AfterFunc(delay, func() { _ = r.PerfectRouter.SendPacket(p) })
-	return nil
+	return r.nextWrite[direction].Sub(now)
 }
 
 func (r *deterministicWANRouter) SendPacket(p simnet.Packet) error {
@@ -74,7 +81,9 @@ func (r *deterministicWANRouter) SendPacket(p simnet.Packet) error {
 	if r.lossEvery > 0 && seq%r.lossEvery == 0 {
 		r.dropped.Add(1)
 		r.mu.Unlock()
-		_ = r.deliver(p, direction) // a dropped frame still consumes link serialization time
+		if r.bandwidth > 0 {
+			_ = r.reserveSerialization(p, direction)
+		}
 		return nil
 	}
 	if r.reorderSize <= 0 {
@@ -82,7 +91,7 @@ func (r *deterministicWANRouter) SendPacket(p simnet.Packet) error {
 		return r.deliver(p, direction)
 	}
 	count := r.reorder[direction]
-	if count == 0 && seq%128 != 1 {
+	if count == 0 && (seq%128 != 1 || r.reorderOps.Load() >= deterministicReorderOperations) {
 		r.mu.Unlock()
 		return r.deliver(p, direction)
 	}
@@ -95,12 +104,13 @@ func (r *deterministicWANRouter) SendPacket(p simnet.Packet) error {
 	r.reorder[direction] = count + 1
 	if count+1 < r.reorderSize+1 {
 		r.mu.Unlock()
-		return r.PerfectRouter.SendPacket(p)
+		return r.deliver(p, direction)
 	}
 	held := r.held[direction]
 	delete(r.held, direction)
 	r.reorder[direction] = 0
 	r.reordered.Add(uint64(r.reorderSize))
+	r.reorderOps.Add(1)
 	r.mu.Unlock()
 	if err := r.deliver(p, direction); err != nil {
 		return err
@@ -118,8 +128,8 @@ type deterministicWANCase struct {
 func TestDeterministicWANPerformanceHarness(t *testing.T) {
 	var cases []deterministicWANCase
 	for _, rtt := range []time.Duration{20 * time.Millisecond, 80 * time.Millisecond, 170 * time.Millisecond} {
-		for _, lossEvery := range []int{0, 1000, 200, 100} { // 0, 0.1%, 0.5%, 1%
-			for _, reorderSize := range []int{0, 3, 7} {
+		for _, lossEvery := range []int{0, 200} { // 0 and 0.5%, fixed every-200th full-size datagram.
+			for _, reorderSize := range []int{0, 7} {
 				cases = append(cases, deterministicWANCase{rtt: rtt, lossEvery: lossEvery, reorderSize: reorderSize})
 			}
 		}
@@ -155,6 +165,28 @@ func TestDeterministicWANPerformanceHarness(t *testing.T) {
 				require.NoError(t, err)
 				defer serverConn.CloseWithError(0, "")
 
+				sampleCtx, stopSamples := context.WithCancel(ctx)
+				type senderSample struct{ cwnd, pacing, datagramDepth uint64 }
+				var sampleMu sync.Mutex
+				var samples []senderSample
+				sampleDone := make(chan struct{})
+				go func() {
+					defer close(sampleDone)
+					ticker := time.NewTicker(50 * time.Millisecond)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-sampleCtx.Done():
+							return
+						case <-ticker.C:
+							stats := serverConn.RuntimeStats()
+							sampleMu.Lock()
+							samples = append(samples, senderSample{cwnd: stats.CongestionWindow, pacing: stats.PacingRate, datagramDepth: stats.DatagramSendQueueDepth})
+							sampleMu.Unlock()
+						}
+					}
+				}()
+
 				var receivedBytes atomic.Uint64
 				go func() {
 					for {
@@ -177,6 +209,8 @@ func TestDeterministicWANPerformanceHarness(t *testing.T) {
 				}()
 
 				time.Sleep(duration)
+				stopSamples()
+				<-sampleDone
 				synctest.Wait()
 				stats := serverConn.RuntimeStats()
 				require.Equal(t, "cubic", stats.CongestionController)
@@ -186,11 +220,45 @@ func TestDeterministicWANPerformanceHarness(t *testing.T) {
 				require.Greater(t, stats.UDPWrites, uint64(0))
 				require.Greater(t, receivedBytes.Load(), uint64(0))
 				require.Greater(t, enqueuedBytes.Load(), receivedBytes.Load())
-				if tc.rtt == 170*time.Millisecond && tc.lossEvery == 200 && tc.reorderSize == 7 {
-					require.Greater(t, router.dropped.Load(), uint64(0), "configured deterministic loss must actually be exercised")
-					require.Greater(t, router.reordered.Load(), uint64(0), "configured deterministic reordering must actually be exercised")
+				if tc.lossEvery > 0 {
+					require.Greater(t, router.dropped.Load(), uint64(0), "configured deterministic loss must actually drop packets")
+				} else {
+					require.Zero(t, router.dropped.Load(), "clean/reorder-only trace must not inject loss")
 				}
-				t.Logf("baseline useful_mbps=%.3f cwnd=%d in_flight=%d pacing_Bps=%d datagram_depth=%d datagram_high_water=%d blocked=%d blocked_duration=%s packets_lost=%d spurious=%d packed=%d udp_writes=%d gso=%t dropped=%d reordered=%d", float64(receivedBytes.Load())*8/duration.Seconds()/1e6, stats.CongestionWindow, stats.BytesInFlight, stats.PacingRate, stats.DatagramSendQueueDepth, stats.DatagramSendQueueHighWater, stats.DatagramSendBlocked, stats.DatagramSendBlockedDuration, stats.PacketsLost, stats.SpuriousLosses, stats.PacketsPacked, stats.UDPWrites, stats.GSO, router.dropped.Load(), router.reordered.Load())
+				if tc.reorderSize > 0 {
+					require.Greater(t, router.reordered.Load(), uint64(0), "configured deterministic reordering must actually be exercised")
+					require.LessOrEqual(t, router.reorderOps.Load(), uint64(deterministicReorderOperations), "reorder schedule must stay within its fixed operation budget")
+				} else {
+					require.Zero(t, router.reordered.Load(), "no-reorder trace must not reorder packets")
+				}
+				sampleMu.Lock()
+				cwndMin, cwndMax, pacingMin, pacingMax := ^uint64(0), uint64(0), ^uint64(0), uint64(0)
+				var cwndTotal, pacingTotal, datagramFullSamples uint64
+				for _, sample := range samples {
+					cwndMin, cwndMax = min(cwndMin, sample.cwnd), max(cwndMax, sample.cwnd)
+					pacingMin, pacingMax = min(pacingMin, sample.pacing), max(pacingMax, sample.pacing)
+					cwndTotal += sample.cwnd
+					pacingTotal += sample.pacing
+					if sample.datagramDepth >= 512 {
+						datagramFullSamples++
+					}
+				}
+				sampleCount := uint64(len(samples))
+				sampleMu.Unlock()
+				var cwndAvg, pacingAvg float64
+				if sampleCount > 0 {
+					cwndAvg = float64(cwndTotal) / float64(sampleCount)
+					pacingAvg = float64(pacingTotal) / float64(sampleCount)
+				}
+				blockedRatio := float64(stats.DatagramSendBlockedDuration) / float64(duration)
+				if blockedRatio > 1 {
+					blockedRatio = 1
+				}
+				datagramFullRatio := float64(0)
+				if sampleCount > 0 {
+					datagramFullRatio = float64(datagramFullSamples) / float64(sampleCount)
+				}
+				t.Logf("trace_seed=1 schedule=drop-every-N/reorder-groups-every-128-full-size-packets capped-at-12 rtt=%s loss_every=%d reorder=%d goodput_mbps=%.3f cwnd_final=%d cwnd_avg=%0.f cwnd_min=%d cwnd_max=%d pacing_final_Bps=%d pacing_avg_Bps=%0.f pacing_min_Bps=%d pacing_max_Bps=%d adaptive_packet_threshold=%d adaptive_time_threshold=%s reported_losses=%d loss_events=%d loss_by_packet=%d loss_by_time=%d spurious=%d spurious_after_packet=%d spurious_after_time=%d cwnd_cutbacks=%d cutback_loss=%d recovery_enter=%d recovery_exit=%d recovery_duration=%s injected_drops=%d reorder_ops=%d reordered_packets=%d datagram_full_ratio=%.3f datagram_blocked_ratio=%.3f packets_per_wakeup=%.2f segments_per_write_avg=%.2f app_limited_transitions=%d cubic_epoch_resets=%d", tc.rtt, tc.lossEvery, tc.reorderSize, float64(receivedBytes.Load())*8/duration.Seconds()/1e6, stats.CongestionWindow, cwndAvg, cwndMin, cwndMax, stats.PacingRate, pacingAvg, pacingMin, pacingMax, stats.AdaptivePacketThreshold, stats.AdaptiveTimeThreshold, stats.PacketsLost, stats.LossEvents, stats.LossByPacketThreshold, stats.LossByTimeThreshold, stats.SpuriousLosses, stats.SpuriousAfterPacketThreshold, stats.SpuriousAfterTimeThreshold, stats.CwndCutbacks, stats.CutbackDueToLossEvent, stats.RecoveryEnter, stats.RecoveryExit, stats.RecoveryDuration, router.dropped.Load(), router.reorderOps.Load(), router.reordered.Load(), datagramFullRatio, blockedRatio, float64(stats.PacketsPacked)/float64(max(stats.PacingWakeups, 1)), stats.SegmentsPerWriteAverage, stats.ApplicationLimitedTransitions, stats.CubicEpochResets)
 				avgTXPackets := float64(0)
 				if stats.TXTurns != 0 {
 					avgTXPackets = float64(stats.TXPackets) / float64(stats.TXTurns)

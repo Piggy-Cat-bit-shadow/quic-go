@@ -20,7 +20,9 @@ const (
 	// Specified as an RTT multiplier.
 	timeThreshold = 9.0 / 8
 	// Maximum reordering in packets before packet threshold loss detection considers a packet lost.
-	packetThreshold = 3
+	packetThreshold              = 3
+	maxAdaptivePacketThreshold   = 32
+	maxAdaptiveTimeThresholdRTTs = 3
 	// Before validating the client's address, the server won't send more than 3x bytes than it received.
 	amplificationFactor = 3
 	// We use Retry packets to derive an RTT estimate. Make sure we don't set the RTT to a super low value yet.
@@ -114,28 +116,52 @@ type sentPacketHandler struct {
 	lastMetrics qlog.MetricsUpdated
 	logger      utils.Logger
 
-	spuriousLosses      uint64
-	maxPacketReordering protocol.PacketNumber
-	maxTimeReordering   time.Duration
+	spuriousLosses          uint64
+	maxPacketReordering     protocol.PacketNumber
+	maxTimeReordering       time.Duration
+	lossEvents              uint64
+	lossByPacket            uint64
+	lossByTime              uint64
+	spuriousAfterPacket     uint64
+	spuriousAfterTime       uint64
+	cutbackDueToLoss        uint64
+	adaptivePacketThreshold uint64
+	adaptiveTimeThreshold   time.Duration
+	lastReorderingEvent     monotime.Time
+	lastReorderingDecay     monotime.Time
 }
 
 // RuntimeStats is an identity-free snapshot of the loss detector and sender.
 // It is intentionally kept internal; the public quic package exposes the
 // stable, flattened representation.
 type RuntimeStats struct {
-	CongestionController string
-	CongestionState      string
-	CongestionWindow     protocol.ByteCount
-	BytesInFlight        protocol.ByteCount
-	PacingRate           uint64
-	PacketsLost          uint64
-	BytesLost            uint64
-	SpuriousLosses       uint64
-	MaxPacketReordering  protocol.PacketNumber
-	MaxTimeReordering    time.Duration
-	MinRTT               time.Duration
-	LatestRTT            time.Duration
-	SmoothedRTT          time.Duration
+	CongestionController          string
+	CongestionState               string
+	CongestionWindow              protocol.ByteCount
+	BytesInFlight                 protocol.ByteCount
+	PacingRate                    uint64
+	PacketsLost                   uint64
+	BytesLost                     uint64
+	SpuriousLosses                uint64
+	MaxPacketReordering           protocol.PacketNumber
+	MaxTimeReordering             time.Duration
+	MinRTT                        time.Duration
+	LatestRTT                     time.Duration
+	SmoothedRTT                   time.Duration
+	LossEvents                    uint64
+	LossByPacketThreshold         uint64
+	LossByTimeThreshold           uint64
+	SpuriousAfterPacketThreshold  uint64
+	SpuriousAfterTimeThreshold    uint64
+	CwndCutbacks                  uint64
+	CutbackDueToLossEvent         uint64
+	RecoveryEnter                 uint64
+	RecoveryExit                  uint64
+	RecoveryDuration              time.Duration
+	ApplicationLimitedTransitions uint64
+	CubicEpochResets              uint64
+	AdaptivePacketThreshold       uint64
+	AdaptiveTimeThreshold         time.Duration
 }
 
 var _ SentPacketHandler = &sentPacketHandler{}
@@ -545,11 +571,24 @@ func (h *sentPacketHandler) detectSpuriousLosses(ack *wire.AckFrame, ackTime mon
 			continue
 		}
 		if pn <= ackRange.Largest {
+			lostInfo, found := h.lostPackets.Get(pn)
+			if !found {
+				continue
+			}
 			packetReordering := h.appDataPackets.history.Difference(ack.LargestAcked(), pn)
 			timeReordering := ackTime.Sub(sendTime)
 			maxPacketReordering = max(maxPacketReordering, packetReordering)
 			maxTimeReordering = max(maxTimeReordering, timeReordering)
 			h.spuriousLosses++
+			switch lostInfo.Trigger {
+			case lossTriggerPacket:
+				h.spuriousAfterPacket++
+			case lossTriggerTime:
+				h.spuriousAfterTime++
+			}
+			if lostInfo.EncryptionLevel == protocol.Encryption1RTT {
+				h.learnReorderingTolerance(lostInfo, packetReordering, timeReordering, ackTime)
+			}
 			h.maxPacketReordering = max(h.maxPacketReordering, packetReordering)
 			h.maxTimeReordering = max(h.maxTimeReordering, timeReordering)
 
@@ -569,6 +608,48 @@ func (h *sentPacketHandler) detectSpuriousLosses(ack *wire.AckFrame, ackTime mon
 	}
 }
 
+func (h *sentPacketHandler) learnReorderingTolerance(lost lostPacket, packetReordering protocol.PacketNumber, timeReordering time.Duration, now monotime.Time) {
+	if lost.Trigger == lossTriggerPacket {
+		learned := min(maxAdaptivePacketThreshold, uint64(packetReordering)+1)
+		if learned > max(packetThreshold, h.adaptivePacketThreshold) {
+			h.adaptivePacketThreshold = learned
+		}
+	}
+	if lost.Trigger == lossTriggerTime && lost.RTTAtLoss > 0 {
+		candidate := max(lost.LossDelay, timeReordering+protocol.TimerGranularity)
+		upperBound := max(lost.LossDelay, maxAdaptiveTimeThresholdRTTs*lost.RTTAtLoss)
+		candidate = min(candidate, upperBound)
+		if candidate > h.adaptiveTimeThreshold {
+			h.adaptiveTimeThreshold = candidate
+		}
+	}
+	if lost.Trigger == lossTriggerPacket || lost.Trigger == lossTriggerTime {
+		h.lastReorderingEvent = now
+		h.lastReorderingDecay = now
+	}
+}
+
+func (h *sentPacketHandler) adaptiveThresholds(now monotime.Time, baseRTT, baseDelay time.Duration) (uint64, time.Duration) {
+	packet := max(packetThreshold, h.adaptivePacketThreshold)
+	upperBound := max(baseDelay, maxAdaptiveTimeThresholdRTTs*baseRTT)
+	h.adaptiveTimeThreshold = min(h.adaptiveTimeThreshold, upperBound)
+	timeWindow := min(upperBound, max(baseDelay, h.adaptiveTimeThreshold))
+	if h.lastReorderingEvent.IsZero() || baseRTT <= 0 || now.Before(h.lastReorderingDecay) {
+		return packet, timeWindow
+	}
+	for now.Sub(h.lastReorderingDecay) >= baseRTT && now.Sub(h.lastReorderingEvent) >= baseRTT {
+		if h.adaptivePacketThreshold > packetThreshold {
+			h.adaptivePacketThreshold--
+		}
+		decayStep := max(time.Duration(1), baseRTT/8)
+		if h.adaptiveTimeThreshold > baseDelay {
+			h.adaptiveTimeThreshold = max(baseDelay, h.adaptiveTimeThreshold-decayStep)
+		}
+		h.lastReorderingDecay = h.lastReorderingDecay.Add(baseRTT)
+	}
+	return max(packetThreshold, h.adaptivePacketThreshold), min(upperBound, max(baseDelay, h.adaptiveTimeThreshold))
+}
+
 func (h *sentPacketHandler) RuntimeStats() RuntimeStats {
 	state := "congestion_avoidance"
 	if h.congestion.InSlowStart() {
@@ -582,20 +663,47 @@ func (h *sentPacketHandler) RuntimeStats() RuntimeStats {
 		controllerName = runtime.GetCongestionControllerName()
 		pacingRate = runtime.GetPacingRate()
 	}
+	var applicationLimitedTransitions, cubicEpochResets uint64
+	var cwndCutbacks, recoveryEnter, recoveryExit uint64
+	var recoveryDuration time.Duration
+	if runtime, ok := h.congestion.(congestion.SendAlgorithmCubicRuntimeStats); ok {
+		applicationLimitedTransitions = runtime.GetApplicationLimitedTransitions()
+		cubicEpochResets = runtime.GetCubicEpochResets()
+		cwndCutbacks = runtime.GetCwndCutbacks()
+		recoveryEnter = runtime.GetRecoveryEnter()
+		recoveryExit = runtime.GetRecoveryExit()
+		recoveryDuration = runtime.GetRecoveryDuration()
+	}
+	baseRTT := max(h.rttStats.LatestRTT(), h.rttStats.SmoothedRTT())
+	baseTimeThreshold := max(time.Duration(timeThreshold*float64(baseRTT)), protocol.TimerGranularity)
 	return RuntimeStats{
-		CongestionController: controllerName,
-		CongestionState:      state,
-		CongestionWindow:     h.congestion.GetCongestionWindow(),
-		BytesInFlight:        h.bytesInFlight,
-		PacingRate:           pacingRate,
-		PacketsLost:          h.connStats.PacketsLost.Load(),
-		BytesLost:            h.connStats.BytesLost.Load(),
-		SpuriousLosses:       h.spuriousLosses,
-		MaxPacketReordering:  h.maxPacketReordering,
-		MaxTimeReordering:    h.maxTimeReordering,
-		MinRTT:               h.rttStats.MinRTT(),
-		LatestRTT:            h.rttStats.LatestRTT(),
-		SmoothedRTT:          h.rttStats.SmoothedRTT(),
+		CongestionController:          controllerName,
+		CongestionState:               state,
+		CongestionWindow:              h.congestion.GetCongestionWindow(),
+		BytesInFlight:                 h.bytesInFlight,
+		PacingRate:                    pacingRate,
+		PacketsLost:                   h.connStats.PacketsLost.Load(),
+		BytesLost:                     h.connStats.BytesLost.Load(),
+		SpuriousLosses:                h.spuriousLosses,
+		MaxPacketReordering:           h.maxPacketReordering,
+		MaxTimeReordering:             h.maxTimeReordering,
+		MinRTT:                        h.rttStats.MinRTT(),
+		LatestRTT:                     h.rttStats.LatestRTT(),
+		SmoothedRTT:                   h.rttStats.SmoothedRTT(),
+		LossEvents:                    h.lossEvents,
+		LossByPacketThreshold:         h.lossByPacket,
+		LossByTimeThreshold:           h.lossByTime,
+		SpuriousAfterPacketThreshold:  h.spuriousAfterPacket,
+		SpuriousAfterTimeThreshold:    h.spuriousAfterTime,
+		CwndCutbacks:                  cwndCutbacks,
+		CutbackDueToLossEvent:         h.cutbackDueToLoss,
+		RecoveryEnter:                 recoveryEnter,
+		RecoveryExit:                  recoveryExit,
+		RecoveryDuration:              recoveryDuration,
+		ApplicationLimitedTransitions: applicationLimitedTransitions,
+		CubicEpochResets:              cubicEpochResets,
+		AdaptivePacketThreshold:       max(packetThreshold, h.adaptivePacketThreshold),
+		AdaptiveTimeThreshold:         min(max(baseTimeThreshold, maxAdaptiveTimeThresholdRTTs*baseRTT), max(baseTimeThreshold, h.adaptiveTimeThreshold)),
 	}
 }
 
@@ -865,14 +973,19 @@ func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protoc
 	pnSpace := h.getPacketNumberSpace(encLevel)
 	pnSpace.lossTime = 0
 
-	maxRTT := float64(max(h.rttStats.LatestRTT(), h.rttStats.SmoothedRTT()))
-	lossDelay := time.Duration(timeThreshold * maxRTT)
+	baseRTT := max(h.rttStats.LatestRTT(), h.rttStats.SmoothedRTT())
+	lossDelay := time.Duration(timeThreshold * float64(baseRTT))
 
 	// Minimum time of granularity before packets are deemed lost.
 	lossDelay = max(lossDelay, protocol.TimerGranularity)
+	activePacketThreshold := uint64(packetThreshold)
+	activeTimeThreshold := lossDelay
+	if encLevel == protocol.Encryption1RTT {
+		activePacketThreshold, activeTimeThreshold = h.adaptiveThresholds(now, baseRTT, lossDelay)
+	}
 
 	// Packets sent before this time are deemed lost.
-	lostSendTime := now.Add(-lossDelay)
+	lostSendTime := now.Add(-activeTimeThreshold)
 
 	priorInFlight := h.bytesInFlight
 	for pn, p := range pnSpace.history.Packets() {
@@ -881,8 +994,10 @@ func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protoc
 		}
 
 		var packetLost bool
+		var trigger lossTrigger
 		if !p.SendTime.After(lostSendTime) {
 			packetLost = true
+			trigger = lossTriggerTime
 			if !p.isPathProbePacket && p.IsAckEliciting() {
 				if h.logger.Debug() {
 					h.logger.Debugf("\tlost packet %d (time threshold)", pn)
@@ -897,8 +1012,9 @@ func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protoc
 					})
 				}
 			}
-		} else if pnSpace.history.Difference(pnSpace.largestAcked, pn) >= packetThreshold {
+		} else if pnSpace.history.Difference(pnSpace.largestAcked, pn) >= protocol.PacketNumber(activePacketThreshold) {
 			packetLost = true
+			trigger = lossTriggerPacket
 			if !p.isPathProbePacket && p.IsAckEliciting() {
 				if h.logger.Debug() {
 					h.logger.Debugf("\tlost packet %d (reordering threshold)", pn)
@@ -915,7 +1031,7 @@ func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protoc
 			}
 		} else if pnSpace.lossTime.IsZero() {
 			// Note: This conditional is only entered once per call
-			lossTime := p.SendTime.Add(lossDelay)
+			lossTime := p.SendTime.Add(activeTimeThreshold)
 			if h.logger.Debug() {
 				h.logger.Debugf("\tsetting loss timer for packet %d (%s) to %s (in %s)", pn, encLevel, lossDelay, lossTime)
 			}
@@ -923,15 +1039,32 @@ func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protoc
 		}
 		if packetLost {
 			if encLevel == protocol.Encryption0RTT || encLevel == protocol.Encryption1RTT {
-				h.lostPackets.Add(pn, p.SendTime)
+				h.lostPackets.Add(pn, p.SendTime, lostPacketMetadata{
+					trigger: trigger, lossDelay: activeTimeThreshold, rttAtLoss: baseRTT,
+					packetThreshold: activePacketThreshold, encryptionLevel: p.EncryptionLevel,
+				})
 			}
 			pnSpace.history.DeclareLost(pn)
 			if !p.isPathProbePacket && p.IsAckEliciting() {
+				h.lossEvents++
+				if trigger == lossTriggerPacket {
+					h.lossByPacket++
+				} else if trigger == lossTriggerTime {
+					h.lossByTime++
+				}
 				// the bytes in flight need to be reduced no matter if the frames in this packet will be retransmitted
 				h.removeFromBytesInFlight(p)
 				h.queueFramesForRetransmission(p)
 				if !p.IsPathMTUProbePacket {
+					var priorCutbacks uint64
+					cubicRuntime, hasCubicRuntime := h.congestion.(congestion.SendAlgorithmCubicRuntimeStats)
+					if hasCubicRuntime {
+						priorCutbacks = cubicRuntime.GetCwndCutbacks()
+					}
 					h.congestion.OnCongestionEvent(pn, p.Length, priorInFlight)
+					if hasCubicRuntime && cubicRuntime.GetCwndCutbacks() > priorCutbacks {
+						h.cutbackDueToLoss++
+					}
 				}
 				if encLevel == protocol.Encryption1RTT && h.ecnTracker != nil {
 					h.ecnTracker.LostPacket(pn)

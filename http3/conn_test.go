@@ -485,7 +485,10 @@ func TestEarlyDatagramBoundsAndRelease(t *testing.T) {
 	require.Nil(t, overflow.Data, "overflow must release immediately")
 
 	conn.releaseEarlyDatagrams()
-	require.Empty(t, conn.earlyDatagrams)
+	conn.streamMx.Lock()
+	earlyCount := len(conn.earlyDatagrams)
+	conn.streamMx.Unlock()
+	require.Zero(t, earlyCount)
 }
 
 func TestEarlyDatagramExpiry(t *testing.T) {
@@ -497,11 +500,16 @@ func TestEarlyDatagramExpiry(t *testing.T) {
 	id := quic.StreamID(4)
 	b := &quic.DatagramBuffer{Data: append(quicvarint.Append(nil, uint64(id/4)), byte(1))}
 	require.NoError(t, conn.routeDatagram(b))
+	conn.streamMx.Lock()
 	early := conn.earlyDatagrams[id]
+	conn.streamMx.Unlock()
 	require.NotNil(t, early)
 	conn.expireEarlyDatagram(id, early)
 	require.Nil(t, b.Data, "expired early DATAGRAM must release")
-	require.Empty(t, conn.earlyDatagrams)
+	conn.streamMx.Lock()
+	earlyCount := len(conn.earlyDatagrams)
+	conn.streamMx.Unlock()
+	require.Zero(t, earlyCount)
 }
 
 func TestDuplicateEarlyDatagramIsDroppedAndReleased(t *testing.T) {

@@ -73,3 +73,17 @@ func TestLostPacketTrackerDeleteBefore(t *testing.T) {
 	lt.DeleteBefore(start.Add(time.Hour))
 	require.Empty(t, trackedPackets(lt))
 }
+
+func TestLostPacketTrackerPreservesLossTrigger(t *testing.T) {
+	lt := newLostPacketTracker(2)
+	now := monotime.Now()
+	lt.Add(10, now, lostPacketMetadata{trigger: lossTriggerPacket, lossDelay: 100 * time.Millisecond, packetThreshold: 3})
+	lt.Add(11, now.Add(time.Millisecond), lostPacketMetadata{trigger: lossTriggerTime, lossDelay: 200 * time.Millisecond, packetThreshold: 4})
+	require.Equal(t, lossTriggerPacket, lt.Trigger(10))
+	require.Equal(t, lossTriggerTime, lt.Trigger(11))
+	first, ok := lt.Get(10)
+	require.True(t, ok)
+	require.Equal(t, 100*time.Millisecond, first.LossDelay)
+	require.Equal(t, uint64(3), first.PacketThreshold)
+	require.Zero(t, lt.Trigger(99))
+}

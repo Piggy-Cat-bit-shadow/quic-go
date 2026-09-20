@@ -1,6 +1,8 @@
 package congestion
 
 import (
+	"time"
+
 	"github.com/metacubex/quic-go/internal/monotime"
 	"github.com/metacubex/quic-go/internal/protocol"
 )
@@ -31,6 +33,15 @@ type SendAlgorithmWithDebugInfos interface {
 type SendAlgorithmRuntimeStats interface {
 	GetPacingRate() uint64
 	GetCongestionControllerName() string
+}
+
+type SendAlgorithmCubicRuntimeStats interface {
+	GetApplicationLimitedTransitions() uint64
+	GetCubicEpochResets() uint64
+	GetCwndCutbacks() uint64
+	GetRecoveryEnter() uint64
+	GetRecoveryExit() uint64
+	GetRecoveryDuration() time.Duration
 }
 
 // SendAlgorithmAvailablePacingBudget reports the current pacing token budget

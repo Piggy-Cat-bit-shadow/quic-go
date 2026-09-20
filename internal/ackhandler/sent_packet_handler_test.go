@@ -1661,6 +1661,7 @@ func TestSentPacketHandlerSpuriousLoss(t *testing.T) {
 		},
 		eventRecorder.Events(qlog.SpuriousLoss{}),
 	)
+	require.Greater(t, sph.(*sentPacketHandler).adaptivePacketThreshold, uint64(packetThreshold), "confirmed packet-threshold spurious loss should increase tolerance")
 	eventRecorder.Clear()
 
 	now = now.Add(secondAckDelay)
@@ -1671,7 +1672,7 @@ func TestSentPacketHandlerSpuriousLoss(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, []protocol.PacketNumber{pns[4], pns[5], pns[12], pns[16], pns[17], pns[18]}, packets.Acked)
-	require.Equal(t, []protocol.PacketNumber{pns[7], pns[8], pns[9], pns[10], pns[11], pns[13], pns[14], pns[15]}, packets.Lost)
+	require.Equal(t, []protocol.PacketNumber{pns[7], pns[8], pns[9], pns[10], pns[11], pns[13]}, packets.Lost)
 
 	require.Equal(t,
 		[]qlogwriter.Event{
@@ -1702,6 +1703,46 @@ func TestSentPacketHandlerSpuriousLoss(t *testing.T) {
 		},
 		eventRecorder.Events(qlog.SpuriousLoss{}),
 	)
+	stats := sph.(*sentPacketHandler).RuntimeStats()
+	require.Equal(t, stats.SpuriousLosses, stats.SpuriousAfterPacketThreshold+stats.SpuriousAfterTimeThreshold)
+	require.Equal(t, stats.LossEvents, stats.LossByPacketThreshold+stats.LossByTimeThreshold)
+	require.Greater(t, stats.CwndCutbacks, uint64(0))
+	require.Equal(t, stats.CwndCutbacks, stats.CutbackDueToLossEvent)
+	require.Greater(t, stats.RecoveryEnter, uint64(0))
+}
+
+func TestAdaptiveReorderingToleranceLearnsWithBoundsAndDecays(t *testing.T) {
+	now := monotime.Now()
+	h := &sentPacketHandler{}
+	baseRTT := 100 * time.Millisecond
+	baseDelay := time.Duration(timeThreshold * float64(baseRTT))
+	packet, delay := h.adaptiveThresholds(now, baseRTT, baseDelay)
+	require.Equal(t, uint64(packetThreshold), packet, "clean path keeps the RFC baseline")
+	require.Equal(t, baseDelay, delay)
+
+	h.learnReorderingTolerance(lostPacket{Trigger: lossTriggerPacket}, 7, 0, now)
+	packet, delay = h.adaptiveThresholds(now, baseRTT, baseDelay)
+	require.Equal(t, uint64(8), packet)
+	require.Equal(t, baseDelay, delay)
+
+	h.learnReorderingTolerance(lostPacket{Trigger: lossTriggerPacket}, 1000, 0, now)
+	require.Equal(t, uint64(maxAdaptivePacketThreshold), h.adaptivePacketThreshold, "packet tolerance has a hard upper bound")
+	packet, _ = h.adaptiveThresholds(now.Add(baseRTT), baseRTT, baseDelay)
+	require.Equal(t, uint64(maxAdaptivePacketThreshold-1), packet, "one clean RTT decays the learned packet tolerance")
+
+	timeHandler := &sentPacketHandler{}
+	timeHandler.learnReorderingTolerance(lostPacket{
+		Trigger: lossTriggerTime, LossDelay: baseDelay, RTTAtLoss: baseRTT,
+	}, 0, 200*time.Millisecond, now)
+	require.Equal(t, 201*time.Millisecond, timeHandler.adaptiveTimeThreshold, "learning is anchored to loss-time RTT/delay, not a later inflated RTT")
+	timeHandler.learnReorderingTolerance(lostPacket{
+		Trigger: lossTriggerTime, LossDelay: baseDelay, RTTAtLoss: baseRTT,
+	}, 0, time.Second, now)
+	_, bounded := timeHandler.adaptiveThresholds(now, baseRTT, baseDelay)
+	require.Equal(t, 3*baseRTT, bounded, "time tolerance has a hard RTT-relative upper bound")
+	_, decayed := timeHandler.adaptiveThresholds(now.Add(baseRTT), baseRTT, baseDelay)
+	require.Less(t, decayed, 3*baseRTT)
+	require.GreaterOrEqual(t, decayed, baseDelay)
 }
 
 func BenchmarkSendAndAcknowledge(b *testing.B) {

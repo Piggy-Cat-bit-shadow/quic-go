@@ -176,10 +176,14 @@ func TestCubicSenderDoesNotResetEpochWhenApplicationDataIsPending(t *testing.T) 
 	s.SetApplicationDataPending(true)
 	s.maybeIncreaseCwnd(1, maxDatagramSize, 0, epoch.Add(time.Millisecond))
 	require.Equal(t, epoch, s.cubic.epoch)
+	require.Zero(t, s.GetCubicEpochResets())
+	require.Zero(t, s.GetApplicationLimitedTransitions())
 
 	s.SetApplicationDataPending(false)
 	s.maybeIncreaseCwnd(1, maxDatagramSize, 0, epoch.Add(2*time.Millisecond))
 	require.Zero(t, s.cubic.epoch)
+	require.Equal(t, uint64(1), s.GetCubicEpochResets())
+	require.Equal(t, uint64(1), s.GetApplicationLimitedTransitions())
 }
 
 func TestCubicSenderExponentialSlowStart(t *testing.T) {

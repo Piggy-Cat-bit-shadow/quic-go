@@ -2,6 +2,7 @@ package quic
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,7 +20,12 @@ const (
 	maxDatagramSendQueueLen    = 512
 	maxDatagramRcvQueueLen     = 256
 	maxRetainedDatagramBuffers = 64
+	maxDatagramSendBatchSize   = 32
 )
+
+// MaxDatagramBatchSize bounds temporary work and memory for owned batch APIs.
+// A larger caller slice is accepted as successive bounded prefixes.
+const MaxDatagramBatchSize = maxDatagramSendBatchSize
 
 type datagramRetentionBudget struct {
 	inFlight       atomic.Int32
@@ -143,7 +149,13 @@ func (h *datagramQueue) TryAddBatch(frames []*wire.DatagramFrame) (int, error) {
 		return 0, err
 	default:
 	}
-	count := min(len(frames), maxDatagramSendQueueLen-h.sendQueue.Len())
+	count := min(len(frames), maxDatagramSendBatchSize, maxDatagramSendQueueLen-h.sendQueue.Len())
+	for _, frame := range frames[:count] {
+		if frame == nil {
+			h.sendMx.Unlock()
+			return 0, errors.New("nil DATAGRAM frame in batch")
+		}
+	}
 	for _, frame := range frames[:count] {
 		h.enqueueLocked(frame)
 	}

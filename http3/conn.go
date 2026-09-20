@@ -442,7 +442,9 @@ func (c *rawConn) TrySendDatagramBufferOwned(streamID quic.StreamID, buf []byte,
 func (c *rawConn) DatagramWritable() <-chan struct{} { return c.conn.DatagramWritable() }
 
 func (c *rawConn) TrySendDatagramBuffersOwnedBatch(streamID quic.StreamID, buffers []OwnedDatagramBuffer) (int, error) {
-	items := make([]quic.OwnedDatagram, len(buffers))
+	batchLen := min(len(buffers), quic.MaxDatagramBatchSize)
+	buffers = buffers[:batchLen]
+	items := make([]quic.OwnedDatagram, batchLen)
 	quarterStreamID := uint64(streamID / 4)
 	var encoded [8]byte
 	prefix := quicvarint.Append(encoded[:0], quarterStreamID)
@@ -464,8 +466,8 @@ func (c *rawConn) TrySendDatagramBuffersOwnedBatch(streamID quic.StreamID, buffe
 		}
 	}
 	accepted, err := c.conn.TrySendDatagramsOwnedBatch(items)
-	if err != nil {
-		return 0, err
+	if accepted < 0 || accepted > len(buffers) {
+		return 0, fmt.Errorf("invalid accepted DATAGRAM batch count %d/%d", accepted, len(buffers))
 	}
 	if c.qlogger != nil {
 		for _, buffer := range buffers[:accepted] {
@@ -475,7 +477,7 @@ func (c *rawConn) TrySendDatagramBuffersOwnedBatch(streamID quic.StreamID, buffe
 			})
 		}
 	}
-	return accepted, nil
+	return accepted, err
 }
 
 func (c *rawConn) receiveDatagrams() error {

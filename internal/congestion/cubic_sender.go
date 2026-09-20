@@ -2,6 +2,7 @@ package congestion
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/metacubex/quic-go/internal/monotime"
 	"github.com/metacubex/quic-go/internal/protocol"
@@ -41,8 +42,16 @@ type cubicSender struct {
 
 	// Whether the last loss event caused us to exit slowstart.
 	// Used for stats collection of slowstartPacketsLost
-	lastCutbackExitedSlowstart bool
-	applicationDataPending     bool
+	lastCutbackExitedSlowstart    bool
+	applicationDataPending        bool
+	applicationLimited            bool
+	applicationLimitedTransitions uint64
+	cubicEpochResets              uint64
+	cwndCutbacks                  uint64
+	recoveryEnterCount            uint64
+	recoveryExitCount             uint64
+	recoveryDuration              time.Duration
+	recoveryStartedAt             monotime.Time
 
 	// Congestion window in bytes.
 	congestionWindow protocol.ByteCount
@@ -199,7 +208,11 @@ func (c *cubicSender) OnPacketAcked(
 	priorInFlight protocol.ByteCount,
 	eventTime monotime.Time,
 ) {
+	wasInRecovery := c.InRecovery()
 	c.largestAckedPacketNumber = max(ackedPacketNumber, c.largestAckedPacketNumber)
+	if wasInRecovery && !c.InRecovery() {
+		c.finishRecovery(eventTime)
+	}
 	if c.InRecovery() {
 		return
 	}
@@ -218,6 +231,7 @@ func (c *cubicSender) OnCongestionEvent(packetNumber protocol.PacketNumber, lost
 	if packetNumber <= c.largestSentAtLastCutback {
 		return
 	}
+	wasInRecovery := c.InRecovery()
 	c.lastCutbackExitedSlowstart = c.InSlowStart()
 	c.maybeQlogStateChange(qlog.CongestionStateRecovery)
 
@@ -231,6 +245,11 @@ func (c *cubicSender) OnCongestionEvent(packetNumber protocol.PacketNumber, lost
 	}
 	c.slowStartThreshold = c.congestionWindow
 	c.largestSentAtLastCutback = c.largestSentPacketNumber
+	c.cwndCutbacks++
+	if !wasInRecovery {
+		c.recoveryEnterCount++
+		c.recoveryStartedAt = c.clock.Now()
+	}
 	// reset packet count from congestion avoidance mode. We start
 	// counting again when we're out of recovery.
 	c.numAckedPackets = 0
@@ -248,11 +267,17 @@ func (c *cubicSender) maybeIncreaseCwnd(
 	// the current window.
 	if !c.isCwndLimited(priorInFlight) {
 		if !c.applicationDataPending {
+			if !c.applicationLimited {
+				c.applicationLimitedTransitions++
+				c.applicationLimited = true
+			}
+			c.cubicEpochResets++
 			c.cubic.OnApplicationLimited()
 			c.maybeQlogStateChange(qlog.CongestionStateApplicationLimited)
 		}
 		return
 	}
+	c.applicationLimited = false
 	if c.congestionWindow >= c.maxCongestionWindow() {
 		return
 	}
@@ -281,6 +306,37 @@ func (c *cubicSender) maybeIncreaseCwnd(
 
 func (c *cubicSender) SetApplicationDataPending(pending bool) {
 	c.applicationDataPending = pending
+	if pending {
+		c.applicationLimited = false
+	}
+}
+
+func (c *cubicSender) GetApplicationLimitedTransitions() uint64 {
+	return c.applicationLimitedTransitions
+}
+
+func (c *cubicSender) GetCubicEpochResets() uint64 { return c.cubicEpochResets }
+
+func (c *cubicSender) GetCwndCutbacks() uint64  { return c.cwndCutbacks }
+func (c *cubicSender) GetRecoveryEnter() uint64 { return c.recoveryEnterCount }
+func (c *cubicSender) GetRecoveryExit() uint64  { return c.recoveryExitCount }
+func (c *cubicSender) GetRecoveryDuration() time.Duration {
+	duration := c.recoveryDuration
+	if !c.recoveryStartedAt.IsZero() {
+		now := c.clock.Now()
+		if now.After(c.recoveryStartedAt) {
+			duration += now.Sub(c.recoveryStartedAt)
+		}
+	}
+	return duration
+}
+
+func (c *cubicSender) finishRecovery(now monotime.Time) {
+	c.recoveryExitCount++
+	if !c.recoveryStartedAt.IsZero() && now.After(c.recoveryStartedAt) {
+		c.recoveryDuration += now.Sub(c.recoveryStartedAt)
+	}
+	c.recoveryStartedAt = 0
 }
 
 func (c *cubicSender) isCwndLimited(bytesInFlight protocol.ByteCount) bool {
@@ -305,6 +361,9 @@ func (c *cubicSender) BandwidthEstimate() Bandwidth {
 
 // OnRetransmissionTimeout is called on an retransmission timeout
 func (c *cubicSender) OnRetransmissionTimeout(packetsRetransmitted bool) {
+	if c.InRecovery() {
+		c.finishRecovery(c.clock.Now())
+	}
 	c.largestSentAtLastCutback = protocol.InvalidPacketNumber
 	if !packetsRetransmitted {
 		return
@@ -317,6 +376,9 @@ func (c *cubicSender) OnRetransmissionTimeout(packetsRetransmitted bool) {
 
 // OnConnectionMigration is called when the connection is migrated (?)
 func (c *cubicSender) OnConnectionMigration() {
+	if c.InRecovery() {
+		c.finishRecovery(c.clock.Now())
+	}
 	c.hybridSlowStart.Restart()
 	c.largestSentPacketNumber = protocol.InvalidPacketNumber
 	c.largestAckedPacketNumber = protocol.InvalidPacketNumber

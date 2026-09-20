@@ -124,6 +124,33 @@ func TestDatagramQueueBatchSchedulesOnce(t *testing.T) {
 	}
 }
 
+func TestDatagramQueueBatchBoundsOversizedInput(t *testing.T) {
+	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
+	frames := make([]*wire.DatagramFrame, 1024)
+	for i := range frames {
+		frames[i] = &wire.DatagramFrame{Data: []byte{byte(i)}}
+	}
+	accepted, err := queue.TryAddBatch(frames)
+	require.NoError(t, err)
+	require.Equal(t, MaxDatagramBatchSize, accepted)
+	require.Equal(t, MaxDatagramBatchSize, queue.Depth())
+	queue.CloseWithError(nil)
+}
+
+func TestDatagramQueueBatchRejectsNilWithoutPartialAcceptance(t *testing.T) {
+	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
+	frames := []*wire.DatagramFrame{
+		{Data: []byte("first")},
+		nil,
+		{Data: []byte("third")},
+	}
+	accepted, err := queue.TryAddBatch(frames)
+	require.ErrorContains(t, err, "nil DATAGRAM frame")
+	require.Zero(t, accepted)
+	require.Zero(t, queue.Depth())
+	queue.CloseWithError(nil)
+}
+
 func TestDatagramQueueOwnedSendLifecycle(t *testing.T) {
 	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
 	owner := new(countingDatagramOwner)

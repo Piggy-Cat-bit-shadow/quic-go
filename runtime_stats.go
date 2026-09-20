@@ -24,6 +24,20 @@ type RuntimeStats struct {
 	SpuriousLosses                uint64
 	MaxPacketReordering           uint64
 	MaxTimeReordering             time.Duration
+	LossEvents                    uint64
+	LossByPacketThreshold         uint64
+	LossByTimeThreshold           uint64
+	SpuriousAfterPacketThreshold  uint64
+	SpuriousAfterTimeThreshold    uint64
+	CwndCutbacks                  uint64
+	CutbackDueToLossEvent         uint64
+	RecoveryEnter                 uint64
+	RecoveryExit                  uint64
+	RecoveryDuration              time.Duration
+	ApplicationLimitedTransitions uint64
+	CubicEpochResets              uint64
+	AdaptivePacketThreshold       uint64
+	AdaptiveTimeThreshold         time.Duration
 	DatagramSendQueueDepth        uint64
 	DatagramSendQueueHighWater    uint64
 	DatagramSendBlocked           uint64
@@ -110,6 +124,20 @@ func (c *Conn) updateRuntimeStats() {
 		out.SpuriousLosses = h.SpuriousLosses
 		out.MaxPacketReordering = uint64(h.MaxPacketReordering)
 		out.MaxTimeReordering = h.MaxTimeReordering
+		out.LossEvents = h.LossEvents
+		out.LossByPacketThreshold = h.LossByPacketThreshold
+		out.LossByTimeThreshold = h.LossByTimeThreshold
+		out.SpuriousAfterPacketThreshold = h.SpuriousAfterPacketThreshold
+		out.SpuriousAfterTimeThreshold = h.SpuriousAfterTimeThreshold
+		out.CwndCutbacks = h.CwndCutbacks
+		out.CutbackDueToLossEvent = h.CutbackDueToLossEvent
+		out.RecoveryEnter = h.RecoveryEnter
+		out.RecoveryExit = h.RecoveryExit
+		out.RecoveryDuration = h.RecoveryDuration
+		out.ApplicationLimitedTransitions = h.ApplicationLimitedTransitions
+		out.CubicEpochResets = h.CubicEpochResets
+		out.AdaptivePacketThreshold = h.AdaptivePacketThreshold
+		out.AdaptiveTimeThreshold = h.AdaptiveTimeThreshold
 	}
 	if c.datagramQueue != nil {
 		q := c.datagramQueue.runtimeStats()

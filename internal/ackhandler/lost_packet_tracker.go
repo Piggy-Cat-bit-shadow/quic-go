@@ -3,14 +3,35 @@ package ackhandler
 import (
 	"iter"
 	"slices"
+	"time"
 
 	"github.com/metacubex/quic-go/internal/monotime"
 	"github.com/metacubex/quic-go/internal/protocol"
 )
 
 type lostPacket struct {
-	PacketNumber protocol.PacketNumber
-	SendTime     monotime.Time
+	PacketNumber    protocol.PacketNumber
+	SendTime        monotime.Time
+	EncryptionLevel protocol.EncryptionLevel
+	Trigger         lossTrigger
+	LossDelay       time.Duration
+	RTTAtLoss       time.Duration
+	PacketThreshold uint64
+}
+
+type lossTrigger uint8
+
+const (
+	lossTriggerTime lossTrigger = iota + 1
+	lossTriggerPacket
+)
+
+type lostPacketMetadata struct {
+	trigger         lossTrigger
+	lossDelay       time.Duration
+	rttAtLoss       time.Duration
+	packetThreshold uint64
+	encryptionLevel protocol.EncryptionLevel
 }
 
 type lostPacketTracker struct {
@@ -27,14 +48,41 @@ func newLostPacketTracker(maxLength int) *lostPacketTracker {
 	}
 }
 
-func (t *lostPacketTracker) Add(p protocol.PacketNumber, sendTime monotime.Time) {
+func (t *lostPacketTracker) Add(p protocol.PacketNumber, sendTime monotime.Time, metadata ...lostPacketMetadata) {
+	var meta lostPacketMetadata
+	if len(metadata) > 0 {
+		meta = metadata[0]
+	}
 	if len(t.lostPackets) == t.maxLength {
 		t.lostPackets = t.lostPackets[1:]
 	}
 	t.lostPackets = append(t.lostPackets, lostPacket{
-		PacketNumber: p,
-		SendTime:     sendTime,
+		PacketNumber:    p,
+		SendTime:        sendTime,
+		EncryptionLevel: meta.encryptionLevel,
+		Trigger:         meta.trigger,
+		LossDelay:       meta.lossDelay,
+		RTTAtLoss:       meta.rttAtLoss,
+		PacketThreshold: meta.packetThreshold,
 	})
+}
+
+func (t *lostPacketTracker) Get(pn protocol.PacketNumber) (lostPacket, bool) {
+	for _, p := range t.lostPackets {
+		if p.PacketNumber == pn {
+			return p, true
+		}
+	}
+	return lostPacket{}, false
+}
+
+func (t *lostPacketTracker) Trigger(pn protocol.PacketNumber) lossTrigger {
+	for _, p := range t.lostPackets {
+		if p.PacketNumber == pn {
+			return p.Trigger
+		}
+	}
+	return 0
 }
 
 // Delete deletes a packet from the lost packet tracker.

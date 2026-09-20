@@ -48,6 +48,8 @@ type RuntimeStats struct {
 	PackedBytes                   uint64
 	PacingWakeups                 uint64
 	ReceivedPacketQueueDrops      uint64
+	ReceivedPackets               uint64
+	ReceivedBytes                 uint64
 	ReceivedDatagramQueueDrops    uint64
 	CurrentPMTU                   uint64
 	GSO                           bool
@@ -98,6 +100,8 @@ func (c *Conn) updateRuntimeStats() {
 		out.DatagramQueueNonEmptyDuration = time.Duration(q.NonEmptyDurationNS)
 		out.ReceivedDatagramQueueDrops = q.ReceiveDrops
 	}
+	out.ReceivedPackets = c.receivedPacketsTotal.Load()
+	out.ReceivedBytes = c.receivedBytes.Load()
 	if q, ok := c.sendQueue.(*sendQueue); ok {
 		s := q.runtimeStats()
 		out.SendQueueDepth = s.Depth

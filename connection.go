@@ -228,11 +228,13 @@ type Conn struct {
 	qlogger   qlogwriter.Recorder
 	logger    utils.Logger
 
-	runtimeStatsMu sync.RWMutex
-	runtimeStats   RuntimeStats
-	packetsPacked  atomic.Uint64
-	packedBytes    atomic.Uint64
-	pacingWakeups  atomic.Uint64
+	runtimeStatsMu       sync.RWMutex
+	runtimeStats         RuntimeStats
+	packetsPacked        atomic.Uint64
+	packedBytes          atomic.Uint64
+	pacingWakeups        atomic.Uint64
+	receivedPacketsTotal atomic.Uint64
+	receivedBytes        atomic.Uint64
 }
 
 var _ streamSender = &Conn{}
@@ -1058,6 +1060,8 @@ func (c *Conn) handlePackets() (wasProcessed bool, _ error) {
 }
 
 func (c *Conn) handleOnePacket(rp receivedPacket, datagramPayloadChecksum qlog.DatagramPayloadChecksum) (wasProcessed bool, _ error) {
+	c.receivedPacketsTotal.Add(1)
+	c.receivedBytes.Add(uint64(rp.Size()))
 	c.sentPacketHandler.ReceivedBytes(rp.Size(), rp.rcvTime)
 
 	if wire.IsVersionNegotiationPacket(rp.data) {

@@ -69,6 +69,26 @@ func TestSendConnDetectGSOFailure(t *testing.T) {
 	)
 	require.NoError(t, c.Write([]byte("foobar"), 4, protocol.ECNCE))
 	require.False(t, c.capabilities().GSO)
+	multi, fallbacks, sendErrors := c.GSOResult()
+	require.Equal(t, uint64(0), multi)
+	require.Equal(t, uint64(1), fallbacks)
+	require.Equal(t, uint64(0), sendErrors)
+}
+
+func TestSendConnCountsOnlySuccessfulMultiSegmentGSO(t *testing.T) {
+	if !platformSupportsGSO {
+		t.Skip("GSO is not supported on this platform")
+	}
+	remoteAddr := &net.UDPAddr{IP: net.IPv4(192, 168, 100, 200), Port: 1337}
+	rawConn := NewMockRawConn(gomock.NewController(t))
+	rawConn.EXPECT().LocalAddr()
+	rawConn.EXPECT().WritePacket([]byte("foobar"), remoteAddr, gomock.Any(), uint16(4), protocol.ECNCE).Return(6, nil)
+	c := newSendConn(rawConn, remoteAddr, packetInfo{}, utils.DefaultLogger)
+	require.NoError(t, c.Write([]byte("foobar"), 4, protocol.ECNCE))
+	multi, fallbacks, sendErrors := c.GSOResult()
+	require.Equal(t, uint64(1), multi)
+	require.Zero(t, fallbacks)
+	require.Zero(t, sendErrors)
 }
 
 func TestSendConnSendmsgFailures(t *testing.T) {

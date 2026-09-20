@@ -54,7 +54,7 @@ func (b *datagramRetentionBudget) release() {
 type datagramQueue struct {
 	sendMx    sync.Mutex
 	sendQueue ringbuffer.RingBuffer[*wire.DatagramFrame]
-	sent      chan struct{} // used to notify Add that a datagram was dequeued
+	writable  chan struct{} // generation channel, closed when a full queue gains capacity
 
 	rcvMx    sync.Mutex
 	rcvQueue ringbuffer.RingBuffer[*DatagramBuffer]
@@ -92,7 +92,7 @@ func newDatagramQueue(hasData func(), logger utils.Logger) *datagramQueue {
 	q := &datagramQueue{
 		hasData:  hasData,
 		rcvd:     make(chan struct{}, 1),
-		sent:     make(chan struct{}, 1),
+		writable: make(chan struct{}),
 		closed:   make(chan struct{}),
 		retained: new(datagramRetentionBudget),
 		logger:   logger,
@@ -106,43 +106,121 @@ func newDatagramQueue(hasData func(), logger utils.Logger) *datagramQueue {
 // Up to maxDatagramSendQueueLen DATAGRAM frames will be queued.
 // Once that limit is reached, Add blocks until the queue size has reduced.
 func (h *datagramQueue) Add(f *wire.DatagramFrame) error {
-	h.sendMx.Lock()
+	return h.AddContext(context.Background(), f)
+}
 
+// TryAdd enqueues f only when capacity is immediately available. If it
+// returns false, ownership remains with the caller. A nil error with true
+// transfers ownership to the queue.
+func (h *datagramQueue) TryAdd(f *wire.DatagramFrame) (bool, error) {
+	h.sendMx.Lock()
+	select {
+	case <-h.closed:
+		err := h.closeErr
+		h.sendMx.Unlock()
+		return false, err
+	default:
+	}
+	if h.sendQueue.Len() >= maxDatagramSendQueueLen {
+		h.sendMx.Unlock()
+		return false, nil
+	}
+	h.enqueueLocked(f)
+	h.sendMx.Unlock()
+	h.hasData()
+	return true, nil
+}
+
+// TryAddBatch atomically accepts the largest prefix that fits. Ownership of
+// accepted frames transfers to the queue; ownership of the remaining frames
+// stays with the caller.
+func (h *datagramQueue) TryAddBatch(frames []*wire.DatagramFrame) (int, error) {
+	h.sendMx.Lock()
+	select {
+	case <-h.closed:
+		err := h.closeErr
+		h.sendMx.Unlock()
+		return 0, err
+	default:
+	}
+	count := min(len(frames), maxDatagramSendQueueLen-h.sendQueue.Len())
+	for _, frame := range frames[:count] {
+		h.enqueueLocked(frame)
+	}
+	h.sendMx.Unlock()
+	if count > 0 {
+		h.hasData()
+	}
+	return count, nil
+}
+
+// Capacity reports the bounded send queue capacity.
+func (h *datagramQueue) Capacity() int { return maxDatagramSendQueueLen }
+
+// Depth reports the current send queue depth.
+func (h *datagramQueue) Depth() int {
+	h.sendMx.Lock()
+	defer h.sendMx.Unlock()
+	return h.sendQueue.Len()
+}
+
+var datagramQueueReady = func() <-chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}()
+
+// Writable returns a channel that becomes ready when at least one queue slot
+// is available or the queue is closed. It is safe to call after a failed
+// TryAdd; the returned channel is already ready if capacity opened in between.
+func (h *datagramQueue) Writable() <-chan struct{} {
+	h.sendMx.Lock()
+	defer h.sendMx.Unlock()
+	select {
+	case <-h.closed:
+		return h.closed
+	default:
+	}
+	if h.sendQueue.Len() < maxDatagramSendQueueLen {
+		return datagramQueueReady
+	}
+	return h.writable
+}
+
+func (h *datagramQueue) enqueueLocked(f *wire.DatagramFrame) {
+	wasEmpty := h.sendQueue.Empty()
+	h.sendQueue.PushBack(f)
+	h.sendEnqueue.Add(1)
+	h.sendEnqueueBytes.Add(uint64(len(f.Data)))
+	if wasEmpty {
+		h.nonEmptyAt.Store(time.Now().UnixNano())
+	}
+	updateAtomicMax(&h.sendHighWater, uint64(h.sendQueue.Len()))
+}
+
+// AddContext preserves the blocking Add behavior while allowing callers to
+// cancel a full-queue wait.
+func (h *datagramQueue) AddContext(ctx context.Context, f *wire.DatagramFrame) error {
 	for {
-		select {
-		case <-h.closed:
-			err := h.closeErr
-			h.sendMx.Unlock()
+		if err := ctx.Err(); err != nil {
 			return err
-		default:
 		}
-		if h.sendQueue.Len() < maxDatagramSendQueueLen {
-			wasEmpty := h.sendQueue.Empty()
-			h.sendQueue.PushBack(f)
-			h.sendEnqueue.Add(1)
-			h.sendEnqueueBytes.Add(uint64(len(f.Data)))
-			if wasEmpty {
-				h.nonEmptyAt.Store(time.Now().UnixNano())
-			}
-			updateAtomicMax(&h.sendHighWater, uint64(h.sendQueue.Len()))
-			h.sendMx.Unlock()
-			h.hasData()
-			return nil
-		}
-		select {
-		case <-h.sent: // drain the queue so we don't loop immediately
-		default:
+		accepted, err := h.TryAdd(f)
+		if err != nil || accepted {
+			return err
 		}
 		blockedAt := time.Now()
 		h.sendBlocked.Add(1)
-		h.sendMx.Unlock()
 		select {
+		case <-h.Writable():
 		case <-h.closed:
+			h.sendBlockedNS.Add(uint64(time.Since(blockedAt)))
 			return h.closeErr
-		case <-h.sent:
+		case <-ctx.Done():
+			h.sendBlockedNS.Add(uint64(time.Since(blockedAt)))
+			return ctx.Err()
 		}
 		h.sendBlockedNS.Add(uint64(time.Since(blockedAt)))
-		h.sendMx.Lock()
 	}
 }
 
@@ -166,6 +244,7 @@ func (h *datagramQueue) HasData() bool {
 func (h *datagramQueue) Pop() {
 	h.sendMx.Lock()
 	defer h.sendMx.Unlock()
+	wasFull := h.sendQueue.Len() == maxDatagramSendQueueLen
 	f := h.sendQueue.PopFront()
 	if f != nil {
 		h.sendDequeue.Add(1)
@@ -174,9 +253,9 @@ func (h *datagramQueue) Pop() {
 	if h.sendQueue.Empty() {
 		h.closeNonEmptyWindow()
 	}
-	select {
-	case h.sent <- struct{}{}:
-	default:
+	if wasFull {
+		close(h.writable)
+		h.writable = make(chan struct{})
 	}
 }
 
@@ -184,6 +263,7 @@ func (h *datagramQueue) Pop() {
 // This is used for frames that won't be serialized.
 func (h *datagramQueue) Drop() {
 	h.sendMx.Lock()
+	wasFull := h.sendQueue.Len() == maxDatagramSendQueueLen
 	f := h.sendQueue.PopFront()
 	if f != nil {
 		h.sendDequeue.Add(1)
@@ -192,9 +272,9 @@ func (h *datagramQueue) Drop() {
 	if h.sendQueue.Empty() {
 		h.closeNonEmptyWindow()
 	}
-	select {
-	case h.sent <- struct{}{}:
-	default:
+	if wasFull {
+		close(h.writable)
+		h.writable = make(chan struct{})
 	}
 	h.sendMx.Unlock()
 	if f != nil {
@@ -340,5 +420,6 @@ func (h *datagramQueue) CloseWithError(e error) {
 	}
 	h.rcvMx.Unlock()
 	close(h.closed)
+	close(h.writable)
 	h.sendMx.Unlock()
 }

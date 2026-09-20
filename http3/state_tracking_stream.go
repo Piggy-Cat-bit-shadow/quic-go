@@ -26,11 +26,13 @@ const streamDatagramQueueLen = 256
 type stateTrackingStream struct {
 	*quic.Stream
 
-	sendDatagram            func([]byte) error
-	sendDatagramBuffer      func([]byte, int, int) error
-	sendDatagramBufferOwned func([]byte, int, int, quic.DatagramPayloadOwner) error
-	hasData                 chan struct{}
-	queue                   ringbuffer.RingBuffer[*quic.DatagramBuffer]
+	sendDatagram               func([]byte) error
+	sendDatagramBuffer         func([]byte, int, int) error
+	sendDatagramBufferOwned    func([]byte, int, int, quic.DatagramPayloadOwner) error
+	trySendDatagramBufferOwned func([]byte, int, int, quic.DatagramPayloadOwner) (bool, error)
+	datagramWritable           func() <-chan struct{}
+	hasData                    chan struct{}
+	queue                      ringbuffer.RingBuffer[*quic.DatagramBuffer]
 
 	mx      sync.Mutex
 	sendErr error
@@ -176,6 +178,29 @@ func (s *stateTrackingStream) SendDatagramBufferOwned(buf []byte, offset, length
 		owner.Release()
 	}
 	return err
+}
+
+func (s *stateTrackingStream) TrySendDatagramBufferOwned(buf []byte, offset, length int, owner quic.DatagramPayloadOwner) (bool, error) {
+	s.mx.Lock()
+	sendErr := s.sendErr
+	s.mx.Unlock()
+	if sendErr != nil {
+		return false, sendErr
+	}
+	if offset < 0 || length < 0 || offset > len(buf) || length > len(buf)-offset {
+		return false, fmt.Errorf("invalid datagram buffer range: offset=%d length=%d buffer=%d", offset, length, len(buf))
+	}
+	if s.trySendDatagramBufferOwned == nil {
+		return false, errors.New("nonblocking owned datagram send unavailable")
+	}
+	return s.trySendDatagramBufferOwned(buf, offset, length, owner)
+}
+
+func (s *stateTrackingStream) DatagramWritable() <-chan struct{} {
+	if s.datagramWritable == nil {
+		return nil
+	}
+	return s.datagramWritable()
 }
 
 func (s *stateTrackingStream) signalHasDatagram() {

@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/metacubex/quic-go/internal/protocol"
 	"github.com/metacubex/quic-go/internal/utils"
@@ -39,6 +40,72 @@ func TestDatagramQueuePeekAndPop(t *testing.T) {
 	require.Equal(t, &wire.DatagramFrame{Data: []byte("foo")}, queue.Peek())
 	queue.Pop()
 	require.Nil(t, queue.Peek())
+}
+
+func TestDatagramQueueTryAddAndWritable(t *testing.T) {
+	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
+	require.Equal(t, maxDatagramSendQueueLen, queue.Capacity())
+	for range queue.Capacity() {
+		accepted, err := queue.TryAdd(&wire.DatagramFrame{Data: []byte{1}})
+		require.NoError(t, err)
+		require.True(t, accepted)
+	}
+	require.Equal(t, queue.Capacity(), queue.Depth())
+	writable := queue.Writable()
+	accepted, err := queue.TryAdd(&wire.DatagramFrame{Data: []byte{2}})
+	require.NoError(t, err)
+	require.False(t, accepted, "full queue must leave ownership with caller")
+	select {
+	case <-writable:
+		t.Fatal("full queue reported writable before a dequeue")
+	default:
+	}
+
+	queue.Pop()
+	select {
+	case <-writable:
+	case <-time.After(time.Second):
+		t.Fatal("dequeue did not wake writable waiter")
+	}
+	accepted, err = queue.TryAdd(&wire.DatagramFrame{Data: []byte{3}})
+	require.NoError(t, err)
+	require.True(t, accepted)
+}
+
+func TestDatagramQueueAddContextCancellation(t *testing.T) {
+	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
+	for range queue.Capacity() {
+		require.NoError(t, queue.Add(&wire.DatagramFrame{Data: []byte{1}}))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := queue.AddContext(ctx, &wire.DatagramFrame{Data: []byte{2}})
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, queue.Capacity(), queue.Depth())
+}
+
+func TestDatagramQueueTryAddBatchPartialOwnership(t *testing.T) {
+	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
+	for range queue.Capacity() - 1 {
+		require.NoError(t, queue.Add(&wire.DatagramFrame{Data: []byte{1}}))
+	}
+	owners := []*countingDatagramOwner{new(countingDatagramOwner), new(countingDatagramOwner), new(countingDatagramOwner)}
+	frames := make([]*wire.DatagramFrame, len(owners))
+	for i, owner := range owners {
+		frames[i] = &wire.DatagramFrame{Data: []byte{byte(i)}, SendOwner: owner}
+	}
+	accepted, err := queue.TryAddBatch(frames)
+	require.NoError(t, err)
+	require.Equal(t, 1, accepted)
+	require.Equal(t, queue.Capacity(), queue.Depth())
+	for range queue.Capacity() {
+		queue.Drop()
+	}
+	require.EqualValues(t, 1, owners[0].count(), "accepted frame released when dropped")
+	require.Zero(t, owners[1].count(), "unaccepted frame ownership remains with caller")
+	require.Zero(t, owners[2].count(), "unaccepted frame ownership remains with caller")
+	owners[1].Release()
+	owners[2].Release()
 }
 
 func TestDatagramQueueOwnedSendLifecycle(t *testing.T) {

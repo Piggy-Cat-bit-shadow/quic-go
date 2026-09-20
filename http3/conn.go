@@ -139,6 +139,10 @@ func (c *rawConn) TrackStream(str *quic.Stream) *stateTrackingStream {
 	hstr.sendDatagramBufferOwned = func(buf []byte, offset, length int, owner quic.DatagramPayloadOwner) error {
 		return c.sendDatagramBufferOwned(str.StreamID(), buf, offset, length, owner)
 	}
+	hstr.trySendDatagramBufferOwned = func(buf []byte, offset, length int, owner quic.DatagramPayloadOwner) (bool, error) {
+		return c.TrySendDatagramBufferOwned(str.StreamID(), buf, offset, length, owner)
+	}
+	hstr.datagramWritable = c.conn.DatagramWritable
 
 	c.streamMx.Lock()
 	c.streams[str.StreamID()] = hstr
@@ -400,6 +404,39 @@ func (c *rawConn) sendDatagramBufferOwned(streamID quic.StreamID, buf []byte, of
 	}
 	return c.conn.SendDatagramOwned(data, owner)
 }
+
+func (c *rawConn) TrySendDatagramBufferOwned(streamID quic.StreamID, buf []byte, offset, length int, owner quic.DatagramPayloadOwner) (bool, error) {
+	if offset < 0 || length < 0 || offset > len(buf) || length > len(buf)-offset {
+		return false, fmt.Errorf("invalid datagram buffer range: offset=%d length=%d buffer=%d", offset, length, len(buf))
+	}
+	payload := buf[offset : offset+length]
+	quarterStreamID := uint64(streamID / 4)
+	var encoded [8]byte
+	prefix := quicvarint.Append(encoded[:0], quarterStreamID)
+	var data []byte
+	if offset < len(prefix) {
+		data = make([]byte, 0, len(prefix)+length)
+		data = append(data, prefix...)
+		data = append(data, payload...)
+	} else {
+		start := offset - len(prefix)
+		copy(buf[start:offset], prefix)
+		data = buf[start : offset+length]
+	}
+	accepted, err := c.conn.TrySendDatagramOwned(data, owner)
+	if err != nil || !accepted {
+		return accepted, err
+	}
+	if c.qlogger != nil {
+		c.qlogger.RecordEvent(qlog.DatagramCreated{
+			QuarterStreamID: quarterStreamID,
+			Raw:             qlog.RawInfo{Length: len(data), PayloadLength: len(payload)},
+		})
+	}
+	return true, nil
+}
+
+func (c *rawConn) DatagramWritable() <-chan struct{} { return c.conn.DatagramWritable() }
 
 func (c *rawConn) receiveDatagrams() error {
 	for {

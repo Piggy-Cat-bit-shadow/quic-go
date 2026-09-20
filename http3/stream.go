@@ -209,6 +209,25 @@ func (s *Stream) SendDatagramBufferOwned(buf []byte, offset, length int, owner q
 	return err
 }
 
+// TrySendDatagramBufferOwned attempts an owned send without waiting for QUIC
+// DATAGRAM queue capacity. Ownership transfers only when accepted is true.
+func (s *Stream) TrySendDatagramBufferOwned(buf []byte, offset, length int, owner quic.DatagramPayloadOwner) (accepted bool, err error) {
+	sender, ok := s.datagramStream.(interface {
+		TrySendDatagramBufferOwned([]byte, int, int, quic.DatagramPayloadOwner) (bool, error)
+	})
+	if !ok {
+		return false, errors.New("nonblocking owned datagram send unavailable")
+	}
+	return sender.TrySendDatagramBufferOwned(buf, offset, length, owner)
+}
+
+func (s *Stream) DatagramWritable() <-chan struct{} {
+	if c, ok := s.datagramStream.(interface{ DatagramWritable() <-chan struct{} }); ok {
+		return c.DatagramWritable()
+	}
+	return nil
+}
+
 func (s *Stream) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	// TODO: reject if datagrams are not negotiated (yet)
 	return s.datagramStream.ReceiveDatagram(ctx)
@@ -391,6 +410,12 @@ func (s *RequestStream) SendDatagramBuffer(buf []byte, offset, length int) error
 func (s *RequestStream) SendDatagramBufferOwned(buf []byte, offset, length int, owner quic.DatagramPayloadOwner) error {
 	return s.str.SendDatagramBufferOwned(buf, offset, length, owner)
 }
+
+func (s *RequestStream) TrySendDatagramBufferOwned(buf []byte, offset, length int, owner quic.DatagramPayloadOwner) (bool, error) {
+	return s.str.TrySendDatagramBufferOwned(buf, offset, length, owner)
+}
+
+func (s *RequestStream) DatagramWritable() <-chan struct{} { return s.str.DatagramWritable() }
 
 // ReceiveDatagram receives HTTP Datagrams (RFC 9297).
 //

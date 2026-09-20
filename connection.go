@@ -3094,24 +3094,39 @@ func (c *Conn) recordStreamPriorityUpdated(id protocol.StreamID, urgency int8, i
 // In addition, a datagram may be dropped before being sent out if the available packet size suddenly decreases.
 // If the payload is too large to be sent at the current time, a [DatagramTooLargeError] is returned.
 func (c *Conn) SendDatagram(p []byte) error {
-	if !c.supportsDatagrams() {
-		return errors.New("datagram support disabled")
+	f, err := c.newDatagramFrame(p, nil, true)
+	if err != nil {
+		return err
 	}
-
-	f := &wire.DatagramFrame{DataLenPresent: true}
-	// The payload size estimate is conservative.
-	// Under many circumstances we could send a few more bytes.
-	maxDataLen := min(
-		f.MaxDataLen(c.peerParams.MaxDatagramFrameSize, c.version),
-		protocol.ByteCount(c.maxPayloadSizeEstimate.Load()),
-	)
-	if protocol.ByteCount(len(p)) > maxDataLen {
-		return &DatagramTooLargeError{MaxDatagramPayloadSize: int64(maxDataLen)}
-	}
-	f.Data = make([]byte, len(p))
-	copy(f.Data, p)
 	return c.datagramQueue.Add(f)
 }
+
+// SendDatagramContext is SendDatagram with cancellable queue backpressure.
+func (c *Conn) SendDatagramContext(ctx context.Context, p []byte) error {
+	f, err := c.newDatagramFrame(p, nil, true)
+	if err != nil {
+		return err
+	}
+	return c.datagramQueue.AddContext(ctx, f)
+}
+
+// TrySendDatagram queues a copied DATAGRAM only if capacity is immediately
+// available. A false result is backpressure, not a connection error.
+func (c *Conn) TrySendDatagram(p []byte) (bool, error) {
+	f, err := c.newDatagramFrame(p, nil, true)
+	if err != nil {
+		return false, err
+	}
+	return c.datagramQueue.TryAdd(f)
+}
+
+// DatagramWritable returns a notification channel for DATAGRAM queue capacity.
+func (c *Conn) DatagramWritable() <-chan struct{} { return c.datagramQueue.Writable() }
+
+// DatagramQueueDepth and DatagramQueueCapacity expose bounded queue pressure
+// to transport adapters without exposing connection identity or queue storage.
+func (c *Conn) DatagramQueueDepth() int    { return c.datagramQueue.Depth() }
+func (c *Conn) DatagramQueueCapacity() int { return c.datagramQueue.Capacity() }
 
 // DatagramPayloadOwner is released exactly once by quic-go after an owned
 // DATAGRAM has been serialized, or when it is dropped or drained on close.
@@ -3119,12 +3134,60 @@ func (c *Conn) SendDatagram(p []byte) error {
 // means ownership remains with the caller.
 type DatagramPayloadOwner interface{ Release() }
 
+// OwnedDatagram is one caller-owned payload for TrySendDatagramsOwnedBatch.
+type OwnedDatagram struct {
+	Data  []byte
+	Owner DatagramPayloadOwner
+}
+
 // SendDatagramOwned queues p without copying it. The caller must not mutate p
 // after this method returns nil, and must release owner itself when an error
 // is returned.
 func (c *Conn) SendDatagramOwned(p []byte, owner DatagramPayloadOwner) error {
+	f, err := c.newDatagramFrame(p, owner, false)
+	if err != nil {
+		return err
+	}
+	return c.datagramQueue.Add(f)
+}
+
+// TrySendDatagramOwned transfers ownership only when accepted. On a false
+// result or error, the caller retains ownership and must release it as needed.
+func (c *Conn) TrySendDatagramOwned(p []byte, owner DatagramPayloadOwner) (bool, error) {
+	f, err := c.newDatagramFrame(p, owner, false)
+	if err != nil {
+		return false, err
+	}
+	return c.datagramQueue.TryAdd(f)
+}
+
+// TrySendDatagramsOwnedBatch accepts the largest prefix that fits in the
+// bounded queue. Ownership transfers for accepted entries only. On error, no
+// entries are accepted; callers retain ownership of all payloads.
+func (c *Conn) TrySendDatagramsOwnedBatch(datagrams []OwnedDatagram) (int, error) {
+	frames := make([]*wire.DatagramFrame, len(datagrams))
+	for i, datagram := range datagrams {
+		frame, err := c.newDatagramFrame(datagram.Data, datagram.Owner, false)
+		if err != nil {
+			return 0, err
+		}
+		frames[i] = frame
+	}
+	return c.datagramQueue.TryAddBatch(frames)
+}
+
+// SendDatagramOwnedContext is SendDatagramOwned with cancellable backpressure.
+func (c *Conn) SendDatagramOwnedContext(ctx context.Context, p []byte, owner DatagramPayloadOwner) error {
+	f, err := c.newDatagramFrame(p, owner, false)
+	if err != nil {
+		return err
+	}
+	return c.datagramQueue.AddContext(ctx, f)
+}
+
+func (c *Conn) newDatagramFrame(p []byte, owner DatagramPayloadOwner, copyPayload bool) (*wire.DatagramFrame, error) {
 	if !c.supportsDatagrams() {
-		return errors.New("datagram support disabled")
+		return nil, errors.New("datagram support disabled")
 	}
 	f := &wire.DatagramFrame{DataLenPresent: true}
 	maxDataLen := min(
@@ -3132,11 +3195,15 @@ func (c *Conn) SendDatagramOwned(p []byte, owner DatagramPayloadOwner) error {
 		protocol.ByteCount(c.maxPayloadSizeEstimate.Load()),
 	)
 	if protocol.ByteCount(len(p)) > maxDataLen {
-		return &DatagramTooLargeError{MaxDatagramPayloadSize: int64(maxDataLen)}
+		return nil, &DatagramTooLargeError{MaxDatagramPayloadSize: int64(maxDataLen)}
 	}
-	f.Data = p
-	f.SendOwner = owner
-	return c.datagramQueue.Add(f)
+	if copyPayload {
+		f.Data = append([]byte(nil), p...)
+	} else {
+		f.Data = p
+		f.SendOwner = owner
+	}
+	return f, nil
 }
 
 // ReceiveDatagram gets a message received in a QUIC datagram, as specified in RFC 9221.

@@ -214,6 +214,17 @@ func (s *Stream) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	return s.datagramStream.ReceiveDatagram(ctx)
 }
 
+// RuntimeStats returns the identity-free diagnostic snapshot of the QUIC
+// connection carrying this HTTP/3 stream. The raw connection is owned by the
+// HTTP/3 connection for the stream lifetime and quic.Conn.RuntimeStats is safe
+// to read concurrently with packet processing.
+func (s *Stream) RuntimeStats() quic.RuntimeStats {
+	if s == nil || s.conn == nil || s.conn.conn == nil {
+		return quic.RuntimeStats{}
+	}
+	return s.conn.conn.RuntimeStats()
+}
+
 func (s *Stream) ReceiveDatagramBuffer(ctx context.Context) (*quic.DatagramBuffer, error) {
 	if b, ok := s.datagramStream.(interface {
 		ReceiveDatagramBuffer(context.Context) (*quic.DatagramBuffer, error)

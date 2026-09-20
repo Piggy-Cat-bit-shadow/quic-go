@@ -524,6 +524,31 @@ func TestServerHTTPStreamHijacking(t *testing.T) {
 	require.Equal(t, []byte("foobar"), data)
 }
 
+func TestServerHTTPStreamRuntimeStats(t *testing.T) {
+	clientConn, serverConn := newConnPair(t)
+	str, err := clientConn.OpenStream()
+	require.NoError(t, err)
+	_, err = str.Write(encodeRequest(t, httptest.NewRequest(http.MethodHead, "https://www.example.com", nil)))
+	require.NoError(t, err)
+	require.NoError(t, str.Close())
+
+	statsCh := make(chan quic.RuntimeStats, 1)
+	s := &Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		stream := w.(HTTPStreamer).HTTPStream()
+		statsCh <- stream.RuntimeStats()
+		stream.Close()
+	})}
+	go s.ServeQUICConn(serverConn)
+
+	select {
+	case stats := <-statsCh:
+		require.NotZero(t, stats.CongestionWindow)
+		require.NotZero(t, stats.CurrentPMTU)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for server-side runtime stats")
+	}
+}
+
 func getAltSvc(s *Server) (string, bool) {
 	hdr := http.Header{}
 	s.SetQUICHeaders(hdr)

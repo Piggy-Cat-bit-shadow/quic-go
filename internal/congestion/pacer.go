@@ -105,6 +105,12 @@ func (p *pacer) TimeUntilSend() monotime.Time {
 	return p.lastSentTime.Add(max(protocol.MinPacingDelay, time.Duration(d)*time.Nanosecond))
 }
 
+// PacingRate returns the currently effective rate used by the token bucket.
+// It is diagnostic only; the pacer remains the source of truth for scheduling.
+func (p *pacer) PacingRate() uint64 {
+	return p.adjustedBandwidth()
+}
+
 func (p *pacer) SetMaxDatagramSize(s protocol.ByteCount) {
 	p.maxDatagramSize = s
 }

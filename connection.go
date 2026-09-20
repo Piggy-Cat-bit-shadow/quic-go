@@ -171,10 +171,11 @@ type Conn struct {
 	oneRTTStream        *cryptoStream // only set for the server
 	cryptoStreamHandler cryptoStreamHandler
 
-	notifyReceivedPacket chan struct{}
-	sendingScheduled     chan struct{}
-	receivedPacketMx     sync.Mutex
-	receivedPackets      ringbuffer.RingBuffer[receivedPacket]
+	notifyReceivedPacket     chan struct{}
+	sendingScheduled         chan struct{}
+	receivedPacketMx         sync.Mutex
+	receivedPackets          ringbuffer.RingBuffer[receivedPacket]
+	receivedPacketQueueDrops atomic.Uint64
 
 	// closeChan is used to notify the run loop that it should terminate
 	closeChan chan struct{}
@@ -1970,6 +1971,7 @@ func (c *Conn) handlePacket(p receivedPacket) {
 	// Discard packets once the amount of queued packets is larger than
 	// the channel size, protocol.MaxConnUnprocessedPackets
 	if c.receivedPackets.Len() >= protocol.MaxConnUnprocessedPackets {
+		c.receivedPacketQueueDrops.Add(1)
 		if c.qlogger != nil {
 			var datagramPayloadChecksum qlog.DatagramPayloadChecksum
 			if wire.IsLongHeaderPacket(p.data[0]) {

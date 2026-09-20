@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/metacubex/quic-go/internal/utils"
 	"github.com/metacubex/quic-go/internal/utils/ringbuffer"
@@ -65,7 +66,17 @@ type datagramQueue struct {
 
 	hasData func()
 
-	logger utils.Logger
+	logger        utils.Logger
+	sendHighWater atomic.Uint64
+	sendBlocked   atomic.Uint64
+	sendBlockedNS atomic.Uint64
+	receiveDrops  atomic.Uint64
+}
+
+type datagramQueueRuntimeStats struct {
+	SendDepth, SendHighWater, SendBlocked uint64
+	SendBlockedDurationNS                 uint64
+	ReceiveDepth, ReceiveDrops            uint64
 }
 
 func newDatagramQueue(hasData func(), logger utils.Logger) *datagramQueue {
@@ -98,6 +109,7 @@ func (h *datagramQueue) Add(f *wire.DatagramFrame) error {
 		}
 		if h.sendQueue.Len() < maxDatagramSendQueueLen {
 			h.sendQueue.PushBack(f)
+			updateAtomicMax(&h.sendHighWater, uint64(h.sendQueue.Len()))
 			h.sendMx.Unlock()
 			h.hasData()
 			return nil
@@ -106,12 +118,15 @@ func (h *datagramQueue) Add(f *wire.DatagramFrame) error {
 		case <-h.sent: // drain the queue so we don't loop immediately
 		default:
 		}
+		blockedAt := time.Now()
+		h.sendBlocked.Add(1)
 		h.sendMx.Unlock()
 		select {
 		case <-h.closed:
 			return h.closeErr
 		case <-h.sent:
 		}
+		h.sendBlockedNS.Add(uint64(time.Since(blockedAt)))
 		h.sendMx.Lock()
 	}
 }
@@ -157,6 +172,7 @@ func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
 	owner := f.TakeDataOwner()
 	h.rcvMx.Lock()
 	if h.rcvQueue.Len() >= maxDatagramRcvQueueLen {
+		h.receiveDrops.Add(1)
 		h.rcvMx.Unlock()
 		if owner != nil {
 			owner.Release()
@@ -187,6 +203,20 @@ func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
 	default:
 	}
 	h.rcvMx.Unlock()
+}
+
+func (h *datagramQueue) runtimeStats() datagramQueueRuntimeStats {
+	h.sendMx.Lock()
+	sendDepth := uint64(h.sendQueue.Len())
+	h.sendMx.Unlock()
+	h.rcvMx.Lock()
+	receiveDepth := uint64(h.rcvQueue.Len())
+	h.rcvMx.Unlock()
+	return datagramQueueRuntimeStats{
+		SendDepth: sendDepth, SendHighWater: h.sendHighWater.Load(),
+		SendBlocked: h.sendBlocked.Load(), SendBlockedDurationNS: h.sendBlockedNS.Load(),
+		ReceiveDepth: receiveDepth, ReceiveDrops: h.receiveDrops.Load(),
+	}
 }
 
 type DatagramBuffer struct {

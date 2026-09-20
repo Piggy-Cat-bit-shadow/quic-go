@@ -263,6 +263,12 @@ type RequestStream struct {
 	isConnect     bool
 }
 
+// RuntimeStats returns the identity-free diagnostic snapshot of the
+// underlying QUIC connection.
+func (s *RequestStream) RuntimeStats() quic.RuntimeStats {
+	return s.str.conn.conn.RuntimeStats()
+}
+
 func newRequestStream(
 	str *Stream,
 	requestWriter *requestWriter,

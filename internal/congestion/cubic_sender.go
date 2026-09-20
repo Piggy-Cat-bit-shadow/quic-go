@@ -171,6 +171,14 @@ func (c *cubicSender) GetCongestionWindow() protocol.ByteCount {
 	return c.congestionWindow
 }
 
+func (c *cubicSender) GetPacingRate() uint64 {
+	return c.pacer.PacingRate()
+}
+
+func (c *cubicSender) GetCongestionControllerName() string {
+	return "cubic"
+}
+
 func (c *cubicSender) MaybeExitSlowStart() {
 	if c.InSlowStart() &&
 		c.hybridSlowStart.ShouldExitSlowStart(c.rttStats.LatestRTT(), c.rttStats.MinRTT(), c.GetCongestionWindow()/c.maxDatagramSize) {

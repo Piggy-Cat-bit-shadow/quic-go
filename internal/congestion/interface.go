@@ -25,3 +25,10 @@ type SendAlgorithmWithDebugInfos interface {
 	InRecovery() bool
 	GetCongestionWindow() protocol.ByteCount
 }
+
+// SendAlgorithmRuntimeStats is optional so existing congestion-controller
+// implementations and test doubles remain source-compatible.
+type SendAlgorithmRuntimeStats interface {
+	GetPacingRate() uint64
+	GetCongestionControllerName() string
+}

@@ -112,6 +112,29 @@ type sentPacketHandler struct {
 	qlogger     qlogwriter.Recorder
 	lastMetrics qlog.MetricsUpdated
 	logger      utils.Logger
+
+	spuriousLosses      uint64
+	maxPacketReordering protocol.PacketNumber
+	maxTimeReordering   time.Duration
+}
+
+// RuntimeStats is an identity-free snapshot of the loss detector and sender.
+// It is intentionally kept internal; the public quic package exposes the
+// stable, flattened representation.
+type RuntimeStats struct {
+	CongestionController string
+	CongestionState      string
+	CongestionWindow     protocol.ByteCount
+	BytesInFlight        protocol.ByteCount
+	PacingRate           uint64
+	PacketsLost          uint64
+	BytesLost            uint64
+	SpuriousLosses       uint64
+	MaxPacketReordering  protocol.PacketNumber
+	MaxTimeReordering    time.Duration
+	MinRTT               time.Duration
+	LatestRTT            time.Duration
+	SmoothedRTT          time.Duration
 }
 
 var _ SentPacketHandler = &sentPacketHandler{}
@@ -516,6 +539,9 @@ func (h *sentPacketHandler) detectSpuriousLosses(ack *wire.AckFrame, ackTime mon
 			timeReordering := ackTime.Sub(sendTime)
 			maxPacketReordering = max(maxPacketReordering, packetReordering)
 			maxTimeReordering = max(maxTimeReordering, timeReordering)
+			h.spuriousLosses++
+			h.maxPacketReordering = max(h.maxPacketReordering, packetReordering)
+			h.maxTimeReordering = max(h.maxTimeReordering, timeReordering)
 
 			if h.qlogger != nil {
 				h.qlogger.RecordEvent(qlog.SpuriousLoss{
@@ -530,6 +556,36 @@ func (h *sentPacketHandler) detectSpuriousLosses(ack *wire.AckFrame, ackTime mon
 	}
 	for _, pn := range spuriousLosses {
 		h.lostPackets.Delete(pn)
+	}
+}
+
+func (h *sentPacketHandler) RuntimeStats() RuntimeStats {
+	state := "congestion_avoidance"
+	if h.congestion.InSlowStart() {
+		state = "slow_start"
+	} else if h.congestion.InRecovery() {
+		state = "recovery"
+	}
+	controllerName := "unknown"
+	var pacingRate uint64
+	if runtime, ok := h.congestion.(congestion.SendAlgorithmRuntimeStats); ok {
+		controllerName = runtime.GetCongestionControllerName()
+		pacingRate = runtime.GetPacingRate()
+	}
+	return RuntimeStats{
+		CongestionController: controllerName,
+		CongestionState:      state,
+		CongestionWindow:     h.congestion.GetCongestionWindow(),
+		BytesInFlight:        h.bytesInFlight,
+		PacingRate:           pacingRate,
+		PacketsLost:          h.connStats.PacketsLost.Load(),
+		BytesLost:            h.connStats.BytesLost.Load(),
+		SpuriousLosses:       h.spuriousLosses,
+		MaxPacketReordering:  h.maxPacketReordering,
+		MaxTimeReordering:    h.maxTimeReordering,
+		MinRTT:               h.rttStats.MinRTT(),
+		LatestRTT:            h.rttStats.LatestRTT(),
+		SmoothedRTT:          h.rttStats.SmoothedRTT(),
 	}
 }
 

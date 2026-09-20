@@ -47,9 +47,10 @@ func updateAtomicMax(dst *atomic.Uint64, value uint64) {
 	}
 }
 
-// RuntimeStats returns a bounded diagnostic snapshot of this connection.
-// Values are safe to read concurrently with the connection event loop.
-func (c *Conn) RuntimeStats() RuntimeStats {
+// updateRuntimeStats must be called by the connection event loop. Keeping the
+// mutable QUIC state on that side of the lock avoids racing a public snapshot
+// reader with ACK/loss processing.
+func (c *Conn) updateRuntimeStats() {
 	var out RuntimeStats
 	if h, ok := c.sentPacketHandler.(interface {
 		RuntimeStats() ackhandler.RuntimeStats
@@ -91,5 +92,16 @@ func (c *Conn) RuntimeStats() RuntimeStats {
 	} else {
 		out.CurrentPMTU = uint64(c.maxPacketSize())
 	}
-	return out
+	c.runtimeStatsMu.Lock()
+	c.runtimeStats = out
+	c.runtimeStatsMu.Unlock()
+}
+
+// RuntimeStats returns a bounded diagnostic snapshot of this connection.
+// The snapshot is copied from an event-loop-owned cache and is safe to read
+// concurrently with packet processing.
+func (c *Conn) RuntimeStats() RuntimeStats {
+	c.runtimeStatsMu.RLock()
+	defer c.runtimeStatsMu.RUnlock()
+	return c.runtimeStats
 }

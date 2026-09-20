@@ -227,6 +227,9 @@ type Conn struct {
 	qlogTrace qlogwriter.Trace
 	qlogger   qlogwriter.Recorder
 	logger    utils.Logger
+
+	runtimeStatsMu sync.RWMutex
+	runtimeStats   RuntimeStats
 }
 
 var _ streamSender = &Conn{}
@@ -597,6 +600,7 @@ func (c *Conn) run() (err error) {
 
 runLoop:
 	for {
+		c.updateRuntimeStats()
 		if c.framer.QueuedTooManyControlFrames() {
 			c.setCloseError(&closeError{err: &qerr.TransportError{ErrorCode: InternalError}})
 			break runLoop

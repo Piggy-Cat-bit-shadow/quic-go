@@ -1047,9 +1047,10 @@ func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protoc
 			pnSpace.history.DeclareLost(pn)
 			if !p.isPathProbePacket && p.IsAckEliciting() {
 				h.lossEvents++
-				if trigger == lossTriggerPacket {
+				switch trigger {
+				case lossTriggerPacket:
 					h.lossByPacket++
-				} else if trigger == lossTriggerTime {
+				case lossTriggerTime:
 					h.lossByTime++
 				}
 				// the bytes in flight need to be reduced no matter if the frames in this packet will be retransmitted

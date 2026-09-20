@@ -207,7 +207,6 @@ func (h *sendQueue) Run() error {
 			}
 			if e.gsoSize > 0 {
 				h.gsoBytes.Add(packetBytes)
-				h.gsoWrites.Add(1)
 				segments = (packetBytes + uint64(e.gsoSize) - 1) / uint64(e.gsoSize)
 				h.gsoSegments.Add(segments)
 			} else {
@@ -227,6 +226,7 @@ func (h *sendQueue) Run() error {
 				multi, fallback, sendErrors := observer.GSOResult()
 				if multi > beforeMulti && e.gsoSize > 0 && segments > 1 {
 					h.gsoMultiSegmentWrites.Add(1)
+					h.gsoWrites.Add(1)
 					h.gsoSegmentsTotal.Add(segments)
 				}
 				if fallback > beforeFallback {
@@ -237,6 +237,7 @@ func (h *sendQueue) Run() error {
 				}
 			} else if e.gsoSize > 0 && segments > 1 && err == nil {
 				h.gsoMultiSegmentWrites.Add(1)
+				h.gsoWrites.Add(1)
 				h.gsoSegmentsTotal.Add(segments)
 			}
 			if err != nil {

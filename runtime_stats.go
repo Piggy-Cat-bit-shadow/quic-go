@@ -24,6 +24,7 @@ type RuntimeStats struct {
 	SpuriousLosses                uint64
 	MaxPacketReordering           uint64
 	MaxTimeReordering             time.Duration
+	ReorderingEvents              uint64
 	LossEvents                    uint64
 	LossByPacketThreshold         uint64
 	LossByTimeThreshold           uint64
@@ -63,6 +64,10 @@ type RuntimeStats struct {
 	GSOSegments                   uint64
 	GSOAttempts                   uint64
 	SingleSegmentGSOAttempts      uint64
+	GSOMultiSegmentWrites         uint64
+	GSOKernelFallbacks            uint64
+	GSOSendErrors                 uint64
+	GSOSegmentsTotal              uint64
 	GSOBatchBreakShortPacket      uint64
 	GSOBatchBreakPacing           uint64
 	GSOBatchBreakCwnd             uint64
@@ -138,6 +143,7 @@ func (c *Conn) updateRuntimeStats() {
 		out.SpuriousLosses = h.SpuriousLosses
 		out.MaxPacketReordering = uint64(h.MaxPacketReordering)
 		out.MaxTimeReordering = h.MaxTimeReordering
+		out.ReorderingEvents = h.ReorderingEvents
 		out.LossEvents = h.LossEvents
 		out.LossByPacketThreshold = h.LossByPacketThreshold
 		out.LossByTimeThreshold = h.LossByTimeThreshold
@@ -186,6 +192,10 @@ func (c *Conn) updateRuntimeStats() {
 		out.GSOSegments = s.GSOSegments
 		out.GSOAttempts = s.GSOAttempts
 		out.SingleSegmentGSOAttempts = s.SingleSegmentAttempts
+		out.GSOMultiSegmentWrites = s.GSOMultiSegmentWrites
+		out.GSOKernelFallbacks = s.GSOKernelFallbacks
+		out.GSOSendErrors = s.GSOSendErrors
+		out.GSOSegmentsTotal = s.GSOSegmentsTotal
 		if s.Writes > 0 {
 			out.SegmentsPerWriteAverage = float64(s.GSOSegments+s.NonGSOWrites) / float64(s.Writes)
 		}

@@ -101,6 +101,8 @@ func TestSendQueueRuntimeStatsReportSegmentsPerWrite(t *testing.T) {
 		require.Equal(t, uint64(2), stats.GSOSegments)
 		require.Equal(t, uint64(2), stats.GSOAttempts)
 		require.Equal(t, uint64(1), stats.SingleSegmentAttempts)
+		require.Equal(t, uint64(1), stats.GSOMultiSegmentWrites)
+		require.Equal(t, uint64(2), stats.GSOSegmentsTotal)
 		require.Equal(t, uint64(1), stats.SegmentsPerWriteP50)
 		require.Equal(t, uint64(2), stats.SegmentsPerWriteP90)
 		require.Equal(t, uint64(2), stats.SegmentsPerWriteP99)

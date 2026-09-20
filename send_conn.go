@@ -35,7 +35,10 @@ type sconn struct {
 	logger utils.Logger
 
 	// If GSO enabled, and we receive a GSO error for this remote address, GSO is disabled.
-	gotGSOError bool
+	gotGSOError           bool
+	gsoMultiSegmentWrites atomic.Uint64
+	gsoKernelFallbacks    atomic.Uint64
+	gsoSendErrors         atomic.Uint64
 	// Used to catch the error sometimes returned by the first sendmsg call on Linux,
 	// see https://github.com/golang/go/issues/63322.
 	wroteFirstPacket bool
@@ -73,6 +76,7 @@ func (c *sconn) Write(p []byte, gsoSize uint16, ecn protocol.ECN) error {
 	ai := c.remoteAddrInfo.Load()
 	err := c.writePacket(p, ai.addr, ai.oob, gsoSize, ecn)
 	if err != nil && isGSOError(err) {
+		c.gsoKernelFallbacks.Add(1)
 		// disable GSO for future calls
 		c.gotGSOError = true
 		if c.logger.Debug() {
@@ -82,13 +86,25 @@ func (c *sconn) Write(p []byte, gsoSize uint16, ecn protocol.ECN) error {
 		for len(p) > 0 {
 			l := min(len(p), int(gsoSize))
 			if err := c.writePacket(p[:l], ai.addr, ai.oob, 0, ecn); err != nil {
+				if gsoSize > 0 {
+					c.gsoSendErrors.Add(1)
+				}
 				return err
 			}
 			p = p[l:]
 		}
 		return nil
 	}
+	if err != nil && gsoSize > 0 {
+		c.gsoSendErrors.Add(1)
+	} else if gsoSize > 0 && len(p) > int(gsoSize) {
+		c.gsoMultiSegmentWrites.Add(1)
+	}
 	return err
+}
+
+func (c *sconn) GSOResult() (multiWrites, fallbacks, errors uint64) {
+	return c.gsoMultiSegmentWrites.Load(), c.gsoKernelFallbacks.Load(), c.gsoSendErrors.Load()
 }
 
 func (c *sconn) writePacket(p []byte, addr net.Addr, oob []byte, gsoSize uint16, ecn protocol.ECN) error {

@@ -46,6 +46,10 @@ type sendQueue struct {
 	writeSegments         [65]atomic.Uint64
 	gsoAttempts           atomic.Uint64
 	singleSegmentAttempts atomic.Uint64
+	gsoMultiSegmentWrites atomic.Uint64
+	gsoKernelFallbacks    atomic.Uint64
+	gsoSendErrors         atomic.Uint64
+	gsoSegmentsTotal      atomic.Uint64
 }
 
 type sendQueueRuntimeStats struct {
@@ -69,6 +73,11 @@ type sendQueueRuntimeStats struct {
 	SegmentsPerWriteBuckets [65]uint64
 	GSOAttempts             uint64
 	SingleSegmentAttempts   uint64
+	GSOMultiSegmentWrites   uint64
+	GSOKernelFallbacks      uint64
+
+	GSOSendErrors    uint64
+	GSOSegmentsTotal uint64
 }
 
 var _ sender = &sendQueue{}
@@ -150,7 +159,7 @@ func (h *sendQueue) runtimeStats() sendQueueRuntimeStats {
 			}
 		}
 	}
-	stats := sendQueueRuntimeStats{Depth: uint64(len(h.queue)), HighWater: h.highWater.Load(), HardBlocks: h.hardBlocks.Load(), HardBlockedDurationNS: d, Enqueued: h.enqueued.Load(), Sent: h.sent.Load(), EnqueuedBytes: h.enqueuedBytes.Load(), SentBytes: h.sentBytes.Load(), Writes: writes, GSOBytes: h.gsoBytes.Load(), GSOWrites: h.gsoWrites.Load(), NonGSOWrites: h.nonGSOWrites.Load(), GSOSegments: h.gsoSegments.Load(), SegmentsPerWriteP50: p50, SegmentsPerWriteP90: p90, SegmentsPerWriteP99: p99, SegmentsPerWriteMax: maxSegments, GSOAttempts: h.gsoAttempts.Load(), SingleSegmentAttempts: h.singleSegmentAttempts.Load()}
+	stats := sendQueueRuntimeStats{Depth: uint64(len(h.queue)), HighWater: h.highWater.Load(), HardBlocks: h.hardBlocks.Load(), HardBlockedDurationNS: d, Enqueued: h.enqueued.Load(), Sent: h.sent.Load(), EnqueuedBytes: h.enqueuedBytes.Load(), SentBytes: h.sentBytes.Load(), Writes: writes, GSOBytes: h.gsoBytes.Load(), GSOWrites: h.gsoWrites.Load(), NonGSOWrites: h.nonGSOWrites.Load(), GSOSegments: h.gsoSegments.Load(), SegmentsPerWriteP50: p50, SegmentsPerWriteP90: p90, SegmentsPerWriteP99: p99, SegmentsPerWriteMax: maxSegments, GSOAttempts: h.gsoAttempts.Load(), SingleSegmentAttempts: h.singleSegmentAttempts.Load(), GSOMultiSegmentWrites: h.gsoMultiSegmentWrites.Load(), GSOKernelFallbacks: h.gsoKernelFallbacks.Load(), GSOSendErrors: h.gsoSendErrors.Load(), GSOSegmentsTotal: h.gsoSegmentsTotal.Load()}
 	for i := range h.writeSegments {
 		stats.SegmentsPerWriteBuckets[i] = h.writeSegments[i].Load()
 	}
@@ -206,7 +215,31 @@ func (h *sendQueue) Run() error {
 			}
 			h.writeSegments[min(segments, uint64(len(h.writeSegments)-1))].Add(1)
 			h.writes.Add(1)
-			if err := h.conn.Write(e.buf.Data, e.gsoSize, e.ecn); err != nil {
+			var beforeMulti, beforeFallback, beforeErrors uint64
+			observer, observesGSO := h.conn.(interface {
+				GSOResult() (multiWrites, fallbacks, errors uint64)
+			})
+			if observesGSO {
+				beforeMulti, beforeFallback, beforeErrors = observer.GSOResult()
+			}
+			err := h.conn.Write(e.buf.Data, e.gsoSize, e.ecn)
+			if observesGSO {
+				multi, fallback, sendErrors := observer.GSOResult()
+				if multi > beforeMulti && e.gsoSize > 0 && segments > 1 {
+					h.gsoMultiSegmentWrites.Add(1)
+					h.gsoSegmentsTotal.Add(segments)
+				}
+				if fallback > beforeFallback {
+					h.gsoKernelFallbacks.Add(1)
+				}
+				if e.gsoSize > 0 && (sendErrors > beforeErrors || err != nil) {
+					h.gsoSendErrors.Add(1)
+				}
+			} else if e.gsoSize > 0 && segments > 1 && err == nil {
+				h.gsoMultiSegmentWrites.Add(1)
+				h.gsoSegmentsTotal.Add(segments)
+			}
+			if err != nil {
 				// This additional check enables:
 				// 1. Checking for "datagram too large" message from the kernel, as such,
 				// 2. Path MTU discovery,and

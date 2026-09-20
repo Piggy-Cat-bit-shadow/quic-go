@@ -44,6 +44,9 @@ type RuntimeStats struct {
 	UDPWrites                     uint64
 	UDPWireBytes                  uint64
 	GSOBytes                      uint64
+	PacketsPacked                 uint64
+	PackedBytes                   uint64
+	PacingWakeups                 uint64
 	ReceivedPacketQueueDrops      uint64
 	ReceivedDatagramQueueDrops    uint64
 	CurrentPMTU                   uint64
@@ -111,6 +114,9 @@ func (c *Conn) updateRuntimeStats() {
 	}
 	out.ReceivedPacketQueueDrops = c.receivedPacketQueueDrops.Load()
 	out.GSO = c.conn.capabilities().GSO
+	out.PacketsPacked = c.packetsPacked.Load()
+	out.PackedBytes = c.packedBytes.Load()
+	out.PacingWakeups = c.pacingWakeups.Load()
 	if c.mtuDiscoverer != nil {
 		out.CurrentPMTU = uint64(c.mtuDiscoverer.CurrentSize())
 	} else {

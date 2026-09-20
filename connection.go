@@ -230,6 +230,9 @@ type Conn struct {
 
 	runtimeStatsMu sync.RWMutex
 	runtimeStats   RuntimeStats
+	packetsPacked  atomic.Uint64
+	packedBytes    atomic.Uint64
+	pacingWakeups  atomic.Uint64
 }
 
 var _ streamSender = &Conn{}
@@ -2482,6 +2485,7 @@ func (c *Conn) applyTransportParameters() {
 
 func (c *Conn) triggerSending(now monotime.Time) error {
 	c.pacingDeadline = 0
+	c.pacingWakeups.Add(1)
 
 	sendMode := c.sentPacketHandler.SendMode(now)
 	switch sendMode {
@@ -2775,6 +2779,8 @@ func (c *Conn) appendOneShortHeaderPacket(buf *packetBuffer, maxSize protocol.By
 		return 0, err
 	}
 	size := buf.Len() - startLen
+	c.packetsPacked.Add(1)
+	c.packedBytes.Add(uint64(size))
 	c.logShortHeaderPacket(p, ecn, size)
 	c.registerPackedShortHeaderPacket(p, ecn, now)
 	releaseOwnedDatagrams(p.Frames)

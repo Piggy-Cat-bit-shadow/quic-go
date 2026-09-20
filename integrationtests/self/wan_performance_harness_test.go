@@ -1,0 +1,202 @@
+package self_test
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/metacubex/quic-go"
+	"github.com/metacubex/quic-go/testutils/simnet"
+	"github.com/stretchr/testify/require"
+)
+
+// deterministicWANRouter impairs only full-sized short-header traffic. Every
+// Nth such packet is dropped; groups of eight are reordered by holding the
+// first packet for one RTT while the following seven are delivered normally.
+// The router never reads packet contents or uses wall-clock randomness.
+type deterministicWANRouter struct {
+	simnet.PerfectRouter
+	rtt         time.Duration
+	bandwidth   uint64
+	lossEvery   int
+	reorderSize int
+	mu          sync.Mutex
+	seq         map[string]int
+	reorder     map[string]int
+	held        map[string]simnet.Packet
+	nextWrite   map[string]time.Time
+	dropped     atomic.Uint64
+	reordered   atomic.Uint64
+}
+
+func (r *deterministicWANRouter) deliver(p simnet.Packet, direction string) error {
+	if r.bandwidth == 0 {
+		return r.PerfectRouter.SendPacket(p)
+	}
+	r.mu.Lock()
+	if r.nextWrite == nil {
+		r.nextWrite = make(map[string]time.Time)
+	}
+	now := time.Now()
+	start := r.nextWrite[direction]
+	if start.Before(now) {
+		start = now
+	}
+	serialization := time.Duration(uint64(len(p.Data)) * 8 * uint64(time.Second) / r.bandwidth)
+	r.nextWrite[direction] = start.Add(serialization)
+	delay := r.nextWrite[direction].Sub(now)
+	r.mu.Unlock()
+	if delay <= 0 {
+		return r.PerfectRouter.SendPacket(p)
+	}
+	time.AfterFunc(delay, func() { _ = r.PerfectRouter.SendPacket(p) })
+	return nil
+}
+
+func (r *deterministicWANRouter) SendPacket(p simnet.Packet) error {
+	direction := p.From.String() + "->" + p.To.String()
+	if len(p.Data) < 1100 {
+		return r.deliver(p, direction)
+	}
+	r.mu.Lock()
+	if r.seq == nil {
+		r.seq = make(map[string]int)
+		r.reorder = make(map[string]int)
+		r.held = make(map[string]simnet.Packet)
+	}
+	r.seq[direction]++
+	seq := r.seq[direction]
+	if r.lossEvery > 0 && seq%r.lossEvery == 0 {
+		r.dropped.Add(1)
+		r.mu.Unlock()
+		_ = r.deliver(p, direction) // a dropped frame still consumes link serialization time
+		return nil
+	}
+	if r.reorderSize <= 0 {
+		r.mu.Unlock()
+		return r.deliver(p, direction)
+	}
+	count := r.reorder[direction]
+	if count == 0 && seq%128 != 1 {
+		r.mu.Unlock()
+		return r.deliver(p, direction)
+	}
+	if count == 0 {
+		r.held[direction] = p
+		r.reorder[direction] = 1
+		r.mu.Unlock()
+		return nil
+	}
+	r.reorder[direction] = count + 1
+	if count+1 < r.reorderSize+1 {
+		r.mu.Unlock()
+		return r.PerfectRouter.SendPacket(p)
+	}
+	held := r.held[direction]
+	delete(r.held, direction)
+	r.reorder[direction] = 0
+	r.reordered.Add(uint64(r.reorderSize))
+	r.mu.Unlock()
+	if err := r.deliver(p, direction); err != nil {
+		return err
+	}
+	time.AfterFunc(r.rtt, func() { _ = r.deliver(held, direction) })
+	return nil
+}
+
+type deterministicWANCase struct {
+	rtt         time.Duration
+	lossEvery   int
+	reorderSize int
+}
+
+func TestDeterministicWANPerformanceHarness(t *testing.T) {
+	var cases []deterministicWANCase
+	for _, rtt := range []time.Duration{20 * time.Millisecond, 80 * time.Millisecond, 170 * time.Millisecond} {
+		for _, lossEvery := range []int{0, 1000, 200, 100} { // 0, 0.1%, 0.5%, 1%
+			for _, reorderSize := range []int{0, 3, 7} {
+				cases = append(cases, deterministicWANCase{rtt: rtt, lossEvery: lossEvery, reorderSize: reorderSize})
+			}
+		}
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("rtt=%s/lossEvery=%d/reorder=%d", tc.rtt, tc.lossEvery, tc.reorderSize), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				const (
+					payloadSize = 1200
+					duration    = 10 * time.Second
+				)
+				clientAddr := &net.UDPAddr{IP: net.ParseIP("10.0.0.1"), Port: 9001}
+				serverAddr := &net.UDPAddr{IP: net.ParseIP("10.0.0.2"), Port: 9002}
+				router := &deterministicWANRouter{rtt: tc.rtt, bandwidth: 10_000_000, lossEvery: tc.lossEvery, reorderSize: tc.reorderSize}
+				network := &simnet.Simnet{Router: router}
+				settings := simnet.NodeBiDiLinkSettings{Latency: tc.rtt / 2}
+				clientPacketConn := network.NewEndpoint(clientAddr, settings)
+				serverPacketConn := network.NewEndpoint(serverAddr, settings)
+				require.NoError(t, network.Start())
+				defer network.Close()
+				defer clientPacketConn.Close()
+				defer serverPacketConn.Close()
+
+				server, err := quic.Listen(serverPacketConn, getTLSConfig(), getQuicConfig(&quic.Config{EnableDatagrams: true}))
+				require.NoError(t, err)
+				defer server.Close()
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				client, err := quic.Dial(ctx, clientPacketConn, serverPacketConn.LocalAddr(), getTLSClientConfig(), getQuicConfig(&quic.Config{EnableDatagrams: true}))
+				require.NoError(t, err)
+				defer client.CloseWithError(0, "")
+				serverConn, err := server.Accept(ctx)
+				require.NoError(t, err)
+				defer serverConn.CloseWithError(0, "")
+
+				var receivedBytes atomic.Uint64
+				go func() {
+					for {
+						p, readErr := client.ReceiveDatagram(ctx)
+						if readErr != nil {
+							return
+						}
+						receivedBytes.Add(uint64(len(p)))
+					}
+				}()
+				payload := make([]byte, payloadSize)
+				var enqueuedBytes atomic.Uint64
+				go func() {
+					for {
+						if sendErr := serverConn.SendDatagram(payload); sendErr != nil {
+							return
+						}
+						enqueuedBytes.Add(payloadSize)
+					}
+				}()
+
+				time.Sleep(duration)
+				synctest.Wait()
+				stats := serverConn.RuntimeStats()
+				require.Equal(t, "cubic", stats.CongestionController)
+				require.Equal(t, uint64(512), stats.DatagramSendQueueHighWater, "persistent app backlog should fill the bounded DATAGRAM queue")
+				require.Greater(t, stats.DatagramSendBlocked, uint64(0))
+				require.Greater(t, stats.PacketsPacked, uint64(0))
+				require.Greater(t, stats.UDPWrites, uint64(0))
+				require.Greater(t, receivedBytes.Load(), uint64(0))
+				require.Greater(t, enqueuedBytes.Load(), receivedBytes.Load())
+				if tc.rtt == 170*time.Millisecond && tc.lossEvery == 200 && tc.reorderSize == 7 {
+					require.Greater(t, router.dropped.Load(), uint64(0), "configured deterministic loss must actually be exercised")
+					require.Greater(t, router.reordered.Load(), uint64(0), "configured deterministic reordering must actually be exercised")
+				}
+				t.Logf("baseline useful_mbps=%.3f cwnd=%d in_flight=%d pacing_Bps=%d datagram_depth=%d datagram_high_water=%d blocked=%d blocked_duration=%s packets_lost=%d spurious=%d packed=%d udp_writes=%d gso=%t dropped=%d reordered=%d", float64(receivedBytes.Load())*8/duration.Seconds()/1e6, stats.CongestionWindow, stats.BytesInFlight, stats.PacingRate, stats.DatagramSendQueueDepth, stats.DatagramSendQueueHighWater, stats.DatagramSendBlocked, stats.DatagramSendBlockedDuration, stats.PacketsLost, stats.SpuriousLosses, stats.PacketsPacked, stats.UDPWrites, stats.GSO, router.dropped.Load(), router.reordered.Load())
+				avgTXPackets := float64(0)
+				if stats.TXTurns != 0 {
+					avgTXPackets = float64(stats.TXPackets) / float64(stats.TXTurns)
+				}
+				t.Logf("scheduler tx_turns=%d tx_packets=%d avg_tx_packets_per_turn=%.2f rx_turns=%d rx_packets=%d rx_pending_yields=%d pacing_wakeups=%d", stats.TXTurns, stats.TXPackets, avgTXPackets, stats.RXTurns, stats.RXPackets, stats.TXTurnEndedDueToRXPending, stats.PacingWakeups)
+			})
+		})
+	}
+}

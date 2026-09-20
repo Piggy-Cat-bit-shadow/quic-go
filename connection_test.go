@@ -1924,6 +1924,79 @@ func TestConnectionPacketPacing(t *testing.T) {
 	})
 }
 
+func TestConnectionGSOBatchRespectsSendBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		segments  int
+		stopMode  ackhandler.SendMode
+		rxPending bool
+	}{
+		{name: "one pacing packet", segments: 1, stopMode: ackhandler.SendPacingLimited},
+		{name: "two pacing packets", segments: 2, stopMode: ackhandler.SendPacingLimited},
+		{name: "five pacing packets before yielding to RX", segments: 5, stopMode: ackhandler.SendPacingLimited, rxPending: true},
+		{name: "three packets of congestion window room", segments: 3, stopMode: ackhandler.SendNone},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mockCtrl := gomock.NewController(t)
+			sph := mockackhandler.NewMockSentPacketHandler(mockCtrl)
+			sender := NewMockSender(mockCtrl)
+			connection := newServerTestConnection(t, mockCtrl, nil, true,
+				connectionOptSender(sender), connectionOptSentPacketHandler(sph), connectionOptHandshakeConfirmed())
+			maxSize := connection.conn.maxPacketSize()
+			now := monotime.Now()
+
+			modeCalls := 0
+			sph.EXPECT().SendMode(gomock.Any()).DoAndReturn(func(monotime.Time) ackhandler.SendMode {
+				modeCalls++
+				if modeCalls == tc.segments {
+					return tc.stopMode
+				}
+				return ackhandler.SendAny
+			}).Times(tc.segments)
+			sph.EXPECT().ECNMode(true).Return(protocol.ECNNon).Times(tc.segments + 1)
+			if tc.stopMode == ackhandler.SendPacingLimited {
+				sph.EXPECT().TimeUntilSend().Return(now.Add(protocol.MinPacingDelay))
+			}
+			sph.EXPECT().SentPacket(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(tc.segments)
+			for i := range tc.segments {
+				packetNumber := protocol.PacketNumber(i + 1)
+				connection.packer.EXPECT().AppendPacket(gomock.Any(), gomock.Any(), gomock.Any(), Version1).DoAndReturn(
+					func(buf *packetBuffer, _ protocol.ByteCount, _ monotime.Time, _ protocol.Version) (shortHeaderPacket, error) {
+						buf.Data = append(buf.Data, bytes.Repeat([]byte{0x42}, int(maxSize))...)
+						return shortHeaderPacket{PacketNumber: packetNumber, Length: maxSize}, nil
+					})
+			}
+			sender.EXPECT().Send(gomock.Any(), uint16(maxSize), protocol.ECNNon).Do(func(buf *packetBuffer, _ uint16, _ protocol.ECN) {
+				require.Equal(t, tc.segments*int(maxSize), len(buf.Data))
+				buf.Release()
+			})
+			if tc.rxPending {
+				connection.conn.receivedPacketMx.Lock()
+				connection.conn.receivedPackets.PushBack(receivedPacket{})
+				connection.conn.receivedPacketMx.Unlock()
+			}
+
+			require.NoError(t, connection.conn.sendPacketsWithGSO(now))
+			require.Equal(t, tc.segments, modeCalls)
+			if tc.rxPending {
+				require.Equal(t, 1, connection.conn.receivedPackets.Len(), "TX may yield to queued RX only after exhausting its legal GSO budget")
+			}
+		})
+	}
+}
+
+func TestConnectionScheduleSendingCoalescesWakeups(t *testing.T) {
+	connection := newServerTestConnection(t, nil, nil, false)
+	for range 32 {
+		connection.conn.scheduleSending()
+	}
+	require.Len(t, connection.conn.sendingScheduled, 1)
+	connection.conn.updateRuntimeStats()
+	stats := connection.conn.RuntimeStats()
+	require.EqualValues(t, 32, stats.SendScheduleRequests)
+	require.EqualValues(t, 31, stats.SendScheduleCoalesced)
+}
+
 // When the send queue blocks, we need to reset the pacing timer, otherwise the run loop might busy-loop.
 // See https://github.com/metacubex/quic-go/pull/4943 for more details.
 func TestConnectionPacingAndSendQueue(t *testing.T) {

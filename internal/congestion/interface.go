@@ -33,6 +33,12 @@ type SendAlgorithmRuntimeStats interface {
 	GetCongestionControllerName() string
 }
 
+// SendAlgorithmAvailablePacingBudget reports the current pacing token budget
+// capped by remaining congestion-window bytes.
+type SendAlgorithmAvailablePacingBudget interface {
+	AvailablePacingBudget(now monotime.Time, bytesInFlight protocol.ByteCount) protocol.ByteCount
+}
+
 // SendAlgorithmApplicationDataPending is implemented by controllers whose
 // epoch logic distinguishes an idle application from a transport-limited one.
 type SendAlgorithmApplicationDataPending interface {

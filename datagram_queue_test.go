@@ -108,6 +108,22 @@ func TestDatagramQueueTryAddBatchPartialOwnership(t *testing.T) {
 	owners[2].Release()
 }
 
+func TestDatagramQueueBatchSchedulesOnce(t *testing.T) {
+	var scheduleCalls atomic.Int32
+	queue := newDatagramQueue(func() { scheduleCalls.Add(1) }, utils.DefaultLogger)
+	frames := make([]*wire.DatagramFrame, 32)
+	for i := range frames {
+		frames[i] = &wire.DatagramFrame{Data: []byte{byte(i)}}
+	}
+	accepted, err := queue.TryAddBatch(frames)
+	require.NoError(t, err)
+	require.Equal(t, len(frames), accepted)
+	require.EqualValues(t, 1, scheduleCalls.Load(), "one batch should request only one event-loop wakeup")
+	for range accepted {
+		queue.Drop()
+	}
+}
+
 func TestDatagramQueueOwnedSendLifecycle(t *testing.T) {
 	queue := newDatagramQueue(func() {}, utils.DefaultLogger)
 	owner := new(countingDatagramOwner)

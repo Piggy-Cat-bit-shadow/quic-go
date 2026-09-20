@@ -1100,6 +1100,22 @@ func (h *sentPacketHandler) SendMode(now monotime.Time) SendMode {
 	return SendAny
 }
 
+// AvailablePacingBudget returns the pacing budget limited by remaining cwnd.
+// Congestion controllers without the optional byte-budget interface retain a
+// conservative one-datagram fallback when SendMode allows transmission.
+func (h *sentPacketHandler) AvailablePacingBudget(now monotime.Time) protocol.ByteCount {
+	if !h.congestion.CanSend(h.bytesInFlight) {
+		return 0
+	}
+	if budgeter, ok := h.congestion.(congestion.SendAlgorithmAvailablePacingBudget); ok {
+		return budgeter.AvailablePacingBudget(now, h.bytesInFlight)
+	}
+	if h.congestion.HasPacingBudget(now) {
+		return h.initialMaxDatagramSize
+	}
+	return 0
+}
+
 func (h *sentPacketHandler) TimeUntilSend() monotime.Time {
 	return h.congestion.TimeUntilSend(h.bytesInFlight)
 }

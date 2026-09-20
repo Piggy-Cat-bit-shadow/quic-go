@@ -111,6 +111,24 @@ func TestPacerFastPacing(t *testing.T) {
 	require.Equal(t, time.Millisecond, p.TimeUntilSend().Sub(now))
 }
 
+func TestPacerMinimumDelayAccumulatesFivePacketBudget(t *testing.T) {
+	const bandwidth = 5000 * initialMaxDatagramSize // one packet every 200 microseconds
+	p := newPacer(func() Bandwidth { return Bandwidth(bandwidth) * BytesPerSecond * 4 / 5 })
+	now := monotime.Now()
+	for p.Budget(now) >= initialMaxDatagramSize {
+		p.SentPacket(now, initialMaxDatagramSize)
+	}
+
+	next := p.TimeUntilSend()
+	require.Equal(t, protocol.MinPacingDelay, next.Sub(now))
+	require.Equal(t, 5*initialMaxDatagramSize, p.Budget(next))
+	for range 5 {
+		p.SentPacket(next, initialMaxDatagramSize)
+	}
+	require.Zero(t, p.Budget(next))
+	require.Equal(t, protocol.MinPacingDelay, p.TimeUntilSend().Sub(next))
+}
+
 func TestPacerNoOverflows(t *testing.T) {
 	p := newPacer(func() Bandwidth { return math.MaxUint64 })
 	now := monotime.Now()

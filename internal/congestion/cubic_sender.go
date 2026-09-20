@@ -133,6 +133,10 @@ func (c *cubicSender) HasPacingBudget(now monotime.Time) bool {
 	return c.pacer.Budget(now) >= c.maxDatagramSize
 }
 
+func (c *cubicSender) AvailablePacingBudget(now monotime.Time, bytesInFlight protocol.ByteCount) protocol.ByteCount {
+	return min(c.pacer.Budget(now), max(protocol.ByteCount(0), c.GetCongestionWindow()-bytesInFlight))
+}
+
 func (c *cubicSender) maxCongestionWindow() protocol.ByteCount {
 	return c.maxDatagramSize * protocol.MaxCongestionWindowPackets
 }

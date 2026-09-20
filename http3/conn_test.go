@@ -449,6 +449,23 @@ func TestConnSendAndReceiveDatagram(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, append(quarterStreamID, []byte("batch")...), data)
 	require.Eventually(t, func() bool { return owner.releases.Load() == 1 }, time.Second, time.Millisecond)
+
+	batchOwners := []*atomicDatagramOwner{new(atomicDatagramOwner), new(atomicDatagramOwner)}
+	batch := []OwnedDatagramBuffer{
+		{Buffer: []byte{0, 'x'}, Offset: 1, Length: 1, Owner: batchOwners[0]},
+		{Buffer: []byte{0, 'y'}, Offset: 1, Length: 1, Owner: batchOwners[1]},
+	}
+	acceptedCount, err := datagramStr.TrySendDatagramBuffersOwnedBatch(batch)
+	require.NoError(t, err)
+	require.Equal(t, 2, acceptedCount)
+	for _, payload := range []byte{'x', 'y'} {
+		data, err = serverConn.ReceiveDatagram(ctx)
+		require.NoError(t, err)
+		require.Equal(t, append(quarterStreamID, payload), data)
+	}
+	for _, batchOwner := range batchOwners {
+		require.Eventually(t, func() bool { return batchOwner.releases.Load() == 1 }, time.Second, time.Millisecond)
+	}
 }
 
 func TestEarlyDatagramBoundsAndRelease(t *testing.T) {

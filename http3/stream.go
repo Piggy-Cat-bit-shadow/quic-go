@@ -33,6 +33,14 @@ type datagramStream interface {
 	QUICStream() *quic.Stream
 }
 
+// OwnedDatagramBuffer describes one payload with caller-retained ownership
+// until its entry is accepted by a nonblocking batch send.
+type OwnedDatagramBuffer struct {
+	Buffer         []byte
+	Offset, Length int
+	Owner          quic.DatagramPayloadOwner
+}
+
 // A Stream is an HTTP/3 stream.
 //
 // When writing to and reading from the stream, data is framed in HTTP/3 DATA frames.
@@ -219,6 +227,18 @@ func (s *Stream) TrySendDatagramBufferOwned(buf []byte, offset, length int, owne
 		return false, errors.New("nonblocking owned datagram send unavailable")
 	}
 	return sender.TrySendDatagramBufferOwned(buf, offset, length, owner)
+}
+
+// TrySendDatagramBuffersOwnedBatch submits an ordered batch and accepts the
+// largest prefix for which transport capacity is available.
+func (s *Stream) TrySendDatagramBuffersOwnedBatch(buffers []OwnedDatagramBuffer) (int, error) {
+	sender, ok := s.datagramStream.(interface {
+		TrySendDatagramBuffersOwnedBatch([]OwnedDatagramBuffer) (int, error)
+	})
+	if !ok {
+		return 0, errors.New("nonblocking owned datagram batch send unavailable")
+	}
+	return sender.TrySendDatagramBuffersOwnedBatch(buffers)
 }
 
 func (s *Stream) DatagramWritable() <-chan struct{} {
@@ -413,6 +433,10 @@ func (s *RequestStream) SendDatagramBufferOwned(buf []byte, offset, length int, 
 
 func (s *RequestStream) TrySendDatagramBufferOwned(buf []byte, offset, length int, owner quic.DatagramPayloadOwner) (bool, error) {
 	return s.str.TrySendDatagramBufferOwned(buf, offset, length, owner)
+}
+
+func (s *RequestStream) TrySendDatagramBuffersOwnedBatch(buffers []OwnedDatagramBuffer) (int, error) {
+	return s.str.TrySendDatagramBuffersOwnedBatch(buffers)
 }
 
 func (s *RequestStream) DatagramWritable() <-chan struct{} { return s.str.DatagramWritable() }

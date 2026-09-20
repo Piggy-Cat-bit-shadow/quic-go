@@ -142,6 +142,9 @@ func (c *rawConn) TrackStream(str *quic.Stream) *stateTrackingStream {
 	hstr.trySendDatagramBufferOwned = func(buf []byte, offset, length int, owner quic.DatagramPayloadOwner) (bool, error) {
 		return c.TrySendDatagramBufferOwned(str.StreamID(), buf, offset, length, owner)
 	}
+	hstr.trySendDatagramBuffersOwnedBatch = func(buffers []OwnedDatagramBuffer) (int, error) {
+		return c.TrySendDatagramBuffersOwnedBatch(str.StreamID(), buffers)
+	}
 	hstr.datagramWritable = c.conn.DatagramWritable
 
 	c.streamMx.Lock()
@@ -437,6 +440,43 @@ func (c *rawConn) TrySendDatagramBufferOwned(streamID quic.StreamID, buf []byte,
 }
 
 func (c *rawConn) DatagramWritable() <-chan struct{} { return c.conn.DatagramWritable() }
+
+func (c *rawConn) TrySendDatagramBuffersOwnedBatch(streamID quic.StreamID, buffers []OwnedDatagramBuffer) (int, error) {
+	items := make([]quic.OwnedDatagram, len(buffers))
+	quarterStreamID := uint64(streamID / 4)
+	var encoded [8]byte
+	prefix := quicvarint.Append(encoded[:0], quarterStreamID)
+	for _, buffer := range buffers {
+		if buffer.Offset < 0 || buffer.Length < 0 || buffer.Offset > len(buffer.Buffer) || buffer.Length > len(buffer.Buffer)-buffer.Offset {
+			return 0, fmt.Errorf("invalid datagram buffer range: offset=%d length=%d buffer=%d", buffer.Offset, buffer.Length, len(buffer.Buffer))
+		}
+	}
+	for i, buffer := range buffers {
+		if buffer.Offset >= len(prefix) {
+			start := buffer.Offset - len(prefix)
+			copy(buffer.Buffer[start:buffer.Offset], prefix)
+			items[i] = quic.OwnedDatagram{Data: buffer.Buffer[start : buffer.Offset+buffer.Length], Owner: buffer.Owner}
+		} else {
+			data := make([]byte, 0, len(prefix)+buffer.Length)
+			data = append(data, prefix...)
+			data = append(data, buffer.Buffer[buffer.Offset:buffer.Offset+buffer.Length]...)
+			items[i] = quic.OwnedDatagram{Data: data, Owner: buffer.Owner}
+		}
+	}
+	accepted, err := c.conn.TrySendDatagramsOwnedBatch(items)
+	if err != nil {
+		return 0, err
+	}
+	if c.qlogger != nil {
+		for _, buffer := range buffers[:accepted] {
+			c.qlogger.RecordEvent(qlog.DatagramCreated{
+				QuarterStreamID: quarterStreamID,
+				Raw:             qlog.RawInfo{Length: len(prefix) + buffer.Length, PayloadLength: buffer.Length},
+			})
+		}
+	}
+	return accepted, nil
+}
 
 func (c *rawConn) receiveDatagrams() error {
 	for {

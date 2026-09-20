@@ -26,13 +26,14 @@ const streamDatagramQueueLen = 256
 type stateTrackingStream struct {
 	*quic.Stream
 
-	sendDatagram               func([]byte) error
-	sendDatagramBuffer         func([]byte, int, int) error
-	sendDatagramBufferOwned    func([]byte, int, int, quic.DatagramPayloadOwner) error
-	trySendDatagramBufferOwned func([]byte, int, int, quic.DatagramPayloadOwner) (bool, error)
-	datagramWritable           func() <-chan struct{}
-	hasData                    chan struct{}
-	queue                      ringbuffer.RingBuffer[*quic.DatagramBuffer]
+	sendDatagram                     func([]byte) error
+	sendDatagramBuffer               func([]byte, int, int) error
+	sendDatagramBufferOwned          func([]byte, int, int, quic.DatagramPayloadOwner) error
+	trySendDatagramBufferOwned       func([]byte, int, int, quic.DatagramPayloadOwner) (bool, error)
+	trySendDatagramBuffersOwnedBatch func([]OwnedDatagramBuffer) (int, error)
+	datagramWritable                 func() <-chan struct{}
+	hasData                          chan struct{}
+	queue                            ringbuffer.RingBuffer[*quic.DatagramBuffer]
 
 	mx      sync.Mutex
 	sendErr error
@@ -194,6 +195,19 @@ func (s *stateTrackingStream) TrySendDatagramBufferOwned(buf []byte, offset, len
 		return false, errors.New("nonblocking owned datagram send unavailable")
 	}
 	return s.trySendDatagramBufferOwned(buf, offset, length, owner)
+}
+
+func (s *stateTrackingStream) TrySendDatagramBuffersOwnedBatch(buffers []OwnedDatagramBuffer) (int, error) {
+	s.mx.Lock()
+	sendErr := s.sendErr
+	s.mx.Unlock()
+	if sendErr != nil {
+		return 0, sendErr
+	}
+	if s.trySendDatagramBuffersOwnedBatch == nil {
+		return 0, errors.New("nonblocking owned datagram batch send unavailable")
+	}
+	return s.trySendDatagramBuffersOwnedBatch(buffers)
 }
 
 func (s *stateTrackingStream) DatagramWritable() <-chan struct{} {

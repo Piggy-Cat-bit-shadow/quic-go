@@ -11,8 +11,12 @@ import (
 )
 
 const (
-	maxDatagramSendQueueLen    = 32
-	maxDatagramRcvQueueLen     = 128
+	// MASQUE can feed a QUIC connection much faster than the pacer can emit
+	// packets on a high-RTT WAN. A 32-frame send queue turns normal pacing
+	// bursts into application-level backpressure almost immediately. Keep the
+	// queue bounded, but large enough to absorb a useful WAN burst.
+	maxDatagramSendQueueLen    = 512
+	maxDatagramRcvQueueLen     = 256
 	maxRetainedDatagramBuffers = 64
 )
 
@@ -79,7 +83,7 @@ func newDatagramQueue(hasData func(), logger utils.Logger) *datagramQueue {
 }
 
 // Add queues a new DATAGRAM frame for sending.
-// Up to 32 DATAGRAM frames will be queued.
+// Up to maxDatagramSendQueueLen DATAGRAM frames will be queued.
 // Once that limit is reached, Add blocks until the queue size has reduced.
 func (h *datagramQueue) Add(f *wire.DatagramFrame) error {
 	h.sendMx.Lock()

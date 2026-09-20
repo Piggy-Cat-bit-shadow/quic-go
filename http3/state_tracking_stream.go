@@ -11,7 +11,10 @@ import (
 	"github.com/metacubex/quic-go/internal/utils/ringbuffer"
 )
 
-const streamDatagramQueueLen = 32
+// CONNECT-IP and CONNECT-UDP can deliver short bursts faster than the
+// application-side tunnel loop drains them. Keep this bounded, but avoid
+// dropping after only 32 packets on normal WAN scheduling bursts.
+const streamDatagramQueueLen = 256
 
 // stateTrackingStream is an implementation of quic.Stream that delegates
 // to an underlying stream

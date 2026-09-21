@@ -152,7 +152,7 @@ func TestBBRUsesSharedRTTAndExportsRuntimeStats(t *testing.T) {
 	stats := h.RuntimeStats()
 	require.Equal(t, "bbr", stats.CongestionController)
 	require.Equal(t, "startup", stats.BBRMode)
-	require.Equal(t, time.Duration(20*time.Millisecond), stats.BBRMinRTT)
+	require.Equal(t, 20*time.Millisecond, stats.BBRMinRTT)
 }
 
 func TestTransportLossCountersMatchAcrossCubicAndBBR(t *testing.T) {

@@ -7,7 +7,7 @@ package congestion
 
 import (
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"time"
 
 	"github.com/metacubex/quic-go/internal/monotime"
@@ -239,8 +239,6 @@ type bbrSender struct {
 	applicationLimited            bool
 	applicationLimitedTransitions uint64
 	cycleOffsetSource             func(int) int
-	// Latched value of --quic_always_get_bw_sample_when_acked.
-	alwaysGetBwSampleWhenAcked bool
 }
 
 var (
@@ -374,7 +372,7 @@ func (b *bbrSender) GetCongestionWindow() protocol.ByteCount {
 		return b.ProbeRttCongestionWindow()
 	}
 
-	if b.InRecovery() && !(b.rateBasedStartup && b.mode == STARTUP) {
+	if b.InRecovery() && (!b.rateBasedStartup || b.mode != STARTUP) {
 		return min(b.congestionWindow, b.recoveryWindow)
 	}
 
@@ -743,7 +741,7 @@ func (b *bbrSender) EnterProbeBandwidthMode(now monotime.Time) {
 	if b.cycleOffsetSource != nil {
 		b.cycleCurrentOffset = b.cycleOffsetSource(GainCycleLength)
 	} else {
-		b.cycleCurrentOffset = rand.Int() % (GainCycleLength - 1)
+		b.cycleCurrentOffset = rand.IntN(GainCycleLength - 1)
 	}
 	if b.cycleCurrentOffset < 0 || b.cycleCurrentOffset >= GainCycleLength {
 		b.cycleCurrentOffset = 1
@@ -917,9 +915,7 @@ func minRtt(a, b time.Duration) time.Duration {
 	return b
 }
 
-var (
-	InfiniteRTT = time.Duration(math.MaxInt64)
-)
+var InfiniteRTT = time.Duration(math.MaxInt64)
 
 func (b *bbrSender) GetBBRMode() string {
 	switch b.mode {
@@ -963,8 +959,10 @@ func (b *bbrSender) GetAckAggregationHeight() protocol.ByteCount {
 func (b *bbrSender) GetProbeBWCycleIndex() int             { return b.cycleCurrentOffset }
 func (b *bbrSender) GetRecoveryWindow() protocol.ByteCount { return b.recoveryWindow }
 
-var _ SendAlgorithmRuntimeStats = (*bbrSender)(nil)
-var _ SendAlgorithmAvailablePacingBudget = (*bbrSender)(nil)
-var _ SendAlgorithmApplicationDataPending = (*bbrSender)(nil)
-var _ SendAlgorithmBBRRuntimeStats = (*bbrSender)(nil)
-var _ SendAlgorithmEncryptionLevelAware = (*bbrSender)(nil)
+var (
+	_ SendAlgorithmRuntimeStats           = (*bbrSender)(nil)
+	_ SendAlgorithmAvailablePacingBudget  = (*bbrSender)(nil)
+	_ SendAlgorithmApplicationDataPending = (*bbrSender)(nil)
+	_ SendAlgorithmBBRRuntimeStats        = (*bbrSender)(nil)
+	_ SendAlgorithmEncryptionLevelAware   = (*bbrSender)(nil)
+)

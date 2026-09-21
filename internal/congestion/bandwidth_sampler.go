@@ -11,9 +11,7 @@ import (
 	"github.com/metacubex/quic-go/internal/protocol"
 )
 
-var (
-	InfiniteBandwidth = Bandwidth(math.MaxUint64)
-)
+var InfiniteBandwidth = Bandwidth(math.MaxUint64)
 
 // SendTimeState is a subset of ConnectionStateOnSentPacket which is returned
 // to the caller when the packet is acked or lost.

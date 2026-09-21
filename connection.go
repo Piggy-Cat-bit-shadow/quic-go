@@ -178,8 +178,9 @@ type Conn struct {
 	receivedPacketQueueDrops atomic.Uint64
 
 	// closeChan is used to notify the run loop that it should terminate
-	closeChan chan struct{}
-	closeErr  atomic.Pointer[closeError]
+	closeChan                 chan struct{}
+	congestionControlRequests chan congestionControlRequest
+	closeErr                  atomic.Pointer[closeError]
 
 	ctx                   context.Context
 	ctxCancel             context.CancelCauseFunc
@@ -262,6 +263,11 @@ type Conn struct {
 	shortPackets                uint64
 	candidateGSOBatchPackets    uint64
 	packedPacketSizeBuckets     [8]uint64
+}
+
+type congestionControlRequest struct {
+	useBBR bool
+	done   chan struct{}
 }
 
 var _ streamSender = &Conn{}
@@ -588,6 +594,7 @@ func (c *Conn) preSetup() {
 	c.receivedPackets.Init(8)
 	c.notifyReceivedPacket = make(chan struct{}, 1)
 	c.closeChan = make(chan struct{}, 1)
+	c.congestionControlRequests = make(chan congestionControlRequest)
 	c.sendingScheduled = make(chan struct{}, 1)
 	c.handshakeCompleteChan = make(chan struct{})
 
@@ -649,6 +656,12 @@ runLoop:
 			break runLoop
 		default:
 		}
+		select {
+		case request := <-c.congestionControlRequests:
+			c.applyCongestionControlRequest(request)
+			continue
+		default:
+		}
 
 		// no need to set a timer if we can send packets immediately
 		if c.pacingDeadline != deadlineSendImmediately {
@@ -695,6 +708,7 @@ runLoop:
 			// * sending scheduled
 			// * send queue available
 			// * received packets
+			// * congestion controller selection
 			select {
 			case <-c.closeChan:
 				break runLoop
@@ -711,6 +725,8 @@ runLoop:
 				if !wasProcessed {
 					continue
 				}
+			case request := <-c.congestionControlRequests:
+				c.applyCongestionControlRequest(request)
 			}
 		}
 
@@ -3512,9 +3528,37 @@ func (c *Conn) NextConnection(ctx context.Context) (*Conn, error) {
 // native CUBIC implementation. It is safe to call after accepting a
 // connection and before application data is sent.
 func (c *Conn) SetCubicCongestionControl() {
-	if h, ok := c.sentPacketHandler.(interface{ SetCubicCongestionControl() }); ok {
+	c.setCongestionControl(false)
+}
+
+// SetBBRCongestionControl selects the experimental BBRv1 sender. Call it after
+// QUIC accept and before sending application data.
+func (c *Conn) SetBBRCongestionControl() {
+	c.setCongestionControl(true)
+}
+
+func (c *Conn) setCongestionControl(useBBR bool) {
+	request := congestionControlRequest{useBBR: useBBR, done: make(chan struct{})}
+	select {
+	case c.congestionControlRequests <- request:
+	case <-c.ctx.Done():
+		return
+	}
+	select {
+	case <-request.done:
+	case <-c.ctx.Done():
+	}
+}
+
+func (c *Conn) applyCongestionControlRequest(request congestionControlRequest) {
+	if request.useBBR {
+		if h, ok := c.sentPacketHandler.(interface{ SetBBRCongestionControl() }); ok {
+			h.SetBBRCongestionControl()
+		}
+	} else if h, ok := c.sentPacketHandler.(interface{ SetCubicCongestionControl() }); ok {
 		h.SetCubicCongestionControl()
 	}
+	close(request.done)
 }
 
 // estimateMaxPayloadSize estimates the maximum payload size for short header packets.

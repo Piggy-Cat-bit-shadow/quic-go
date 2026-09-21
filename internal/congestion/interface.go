@@ -44,6 +44,24 @@ type SendAlgorithmCubicRuntimeStats interface {
 	GetRecoveryDuration() time.Duration
 }
 
+// SendAlgorithmBBRRuntimeStats exposes model state without making BBR fields
+// part of the generic congestion-controller contract.
+type SendAlgorithmBBRRuntimeStats interface {
+	GetBBRMode() string
+	GetBandwidthEstimate() uint64 // bits per second
+	GetMinRTT() time.Duration
+	GetPacingGain() float64
+	GetCwndGain() float64
+	GetTargetCwnd() protocol.ByteCount
+	GetRoundTripCount() int64
+	GetFullBandwidthReached() bool
+	GetRecoveryState() string
+	GetAppLimited() bool
+	GetAckAggregationHeight() protocol.ByteCount
+	GetProbeBWCycleIndex() int
+	GetRecoveryWindow() protocol.ByteCount
+}
+
 // SendAlgorithmAvailablePacingBudget reports the current pacing token budget
 // capped by remaining congestion-window bytes.
 type SendAlgorithmAvailablePacingBudget interface {
@@ -54,4 +72,12 @@ type SendAlgorithmAvailablePacingBudget interface {
 // epoch logic distinguishes an idle application from a transport-limited one.
 type SendAlgorithmApplicationDataPending interface {
 	SetApplicationDataPending(bool)
+}
+
+// SendAlgorithmEncryptionLevelAware lets controllers with packet-number keyed
+// state distinguish QUIC packet number spaces, which reuse packet numbers.
+type SendAlgorithmEncryptionLevelAware interface {
+	OnPacketSentWithEncryptionLevel(protocol.EncryptionLevel, monotime.Time, protocol.ByteCount, protocol.PacketNumber, protocol.ByteCount, bool)
+	OnPacketAckedWithEncryptionLevel(protocol.EncryptionLevel, protocol.PacketNumber, protocol.ByteCount, protocol.ByteCount, monotime.Time)
+	OnCongestionEventWithEncryptionLevel(protocol.EncryptionLevel, protocol.PacketNumber, protocol.ByteCount, protocol.ByteCount)
 }

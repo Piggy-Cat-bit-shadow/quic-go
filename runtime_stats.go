@@ -13,6 +13,19 @@ import (
 type RuntimeStats struct {
 	CongestionController          string
 	CongestionState               string
+	BBRMode                       string
+	BBRBandwidthEstimate          uint64 // bits per second
+	BBRMinRTT                     time.Duration
+	BBRPacingGain                 float64
+	BBRCwndGain                   float64
+	BBRTargetCwnd                 uint64
+	BBRRoundTripCount             int64
+	BBRFullBandwidthReached       bool
+	BBRRecoveryState              string
+	BBRAppLimited                 bool
+	BBRAckAggregationHeight       uint64
+	BBRProbeBWCycleIndex          int
+	BBRRecoveryWindow             uint64
 	CongestionWindow              uint64
 	BytesInFlight                 uint64
 	PacingRate                    uint64
@@ -132,6 +145,19 @@ func (c *Conn) updateRuntimeStats() {
 		h := h.RuntimeStats()
 		out.CongestionController = h.CongestionController
 		out.CongestionState = h.CongestionState
+		out.BBRMode = h.BBRMode
+		out.BBRBandwidthEstimate = h.BBRBandwidthEstimate
+		out.BBRMinRTT = h.BBRMinRTT
+		out.BBRPacingGain = h.BBRPacingGain
+		out.BBRCwndGain = h.BBRCwndGain
+		out.BBRTargetCwnd = uint64(h.BBRTargetCwnd)
+		out.BBRRoundTripCount = h.BBRRoundTripCount
+		out.BBRFullBandwidthReached = h.BBRFullBandwidthReached
+		out.BBRRecoveryState = h.BBRRecoveryState
+		out.BBRAppLimited = h.BBRAppLimited
+		out.BBRAckAggregationHeight = uint64(h.BBRAckAggregationHeight)
+		out.BBRProbeBWCycleIndex = h.BBRProbeBWCycleIndex
+		out.BBRRecoveryWindow = uint64(h.BBRRecoveryWindow)
 		out.CongestionWindow = uint64(h.CongestionWindow)
 		out.BytesInFlight = uint64(h.BytesInFlight)
 		out.PacingRate = h.PacingRate

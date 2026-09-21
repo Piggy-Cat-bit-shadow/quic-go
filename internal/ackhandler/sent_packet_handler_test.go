@@ -107,6 +107,69 @@ func TestSentPacketHandlerSendAndAcknowledge(t *testing.T) {
 	})
 }
 
+func TestCongestionControllerSelectionSurvivesPathMigration(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		selectController func(*sentPacketHandler)
+		selection        string
+		controller       string
+	}{
+		{name: "default", selection: "default", controller: "cubic"},
+		{name: "cubic", selectController: (*sentPacketHandler).SetCubicCongestionControl, selection: "cubic", controller: "cubic"},
+		{name: "bbr", selectController: (*sentPacketHandler).SetBBRCongestionControl, selection: "bbr", controller: "bbr"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rttStats := utils.NewRTTStats()
+			h := NewSentPacketHandler(0, 1200, rttStats, &utils.ConnectionStats{}, false, false, nil, protocol.PerspectiveClient, nil, utils.DefaultLogger).(*sentPacketHandler)
+			if tc.selectController != nil {
+				tc.selectController(h)
+			}
+			require.Equal(t, tc.selection, h.congestionControllerType)
+			h.MigratedPath(monotime.Now(), 1200)
+			require.Equal(t, tc.selection, h.congestionControllerType)
+			runtime, ok := h.congestion.(interface{ GetCongestionControllerName() string })
+			require.True(t, ok)
+			require.Equal(t, tc.controller, runtime.GetCongestionControllerName())
+		})
+	}
+}
+
+func TestBBRUsesSharedRTTAndExportsRuntimeStats(t *testing.T) {
+	rttStats := utils.NewRTTStats()
+	rttStats.UpdateRTT(20*time.Millisecond, 0)
+	h := NewSentPacketHandler(0, 1200, rttStats, &utils.ConnectionStats{}, false, false, nil, protocol.PerspectiveClient, nil, utils.DefaultLogger).(*sentPacketHandler)
+	h.SetBBRCongestionControl()
+	h.congestion.OnPacketSent(monotime.Now(), 0, 1, 1200, true)
+	runtime, ok := h.congestion.(interface {
+		GetPacingRate() uint64
+		GetCongestionControllerName() string
+	})
+	require.True(t, ok)
+	require.Equal(t, "bbr", runtime.GetCongestionControllerName())
+	// The 20 ms shared handshake RTT yields the expected initial startup rate;
+	// a private fresh RTTStats would instead use the 100 ms initial estimate.
+	require.Greater(t, runtime.GetPacingRate(), uint64(5_000_000))
+	stats := h.RuntimeStats()
+	require.Equal(t, "bbr", stats.CongestionController)
+	require.Equal(t, "startup", stats.BBRMode)
+	require.Equal(t, time.Duration(20*time.Millisecond), stats.BBRMinRTT)
+}
+
+func TestTransportLossCountersMatchAcrossCubicAndBBR(t *testing.T) {
+	for _, controller := range []string{"cubic", "bbr"} {
+		connStats := &utils.ConnectionStats{}
+		h := NewSentPacketHandler(0, 1200, utils.NewRTTStats(), connStats, false, false, nil, protocol.PerspectiveClient, nil, utils.DefaultLogger).(*sentPacketHandler)
+		if controller == "cubic" {
+			h.SetCubicCongestionControl()
+		} else {
+			h.SetBBRCongestionControl()
+		}
+		h.congestion.OnCongestionEvent(1, 1200, 1200)
+		require.Equal(t, uint64(1), connStats.PacketsLost.Load(), controller)
+		require.Equal(t, uint64(1200), connStats.BytesLost.Load(), controller)
+	}
+}
+
 func testSentPacketHandlerSendAndAcknowledge(t *testing.T, encLevel protocol.EncryptionLevel) {
 	sph := NewSentPacketHandler(
 		0,

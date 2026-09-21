@@ -67,11 +67,12 @@ type alarmTimer struct {
 }
 
 type sentPacketHandler struct {
-	initialMaxDatagramSize protocol.ByteCount
-	initialPackets         *packetNumberSpace
-	handshakePackets       *packetNumberSpace
-	appDataPackets         *packetNumberSpace
-	lostPackets            lostPacketTracker // only for application-data packet number space
+	initialMaxDatagramSize   protocol.ByteCount
+	congestionControllerType string
+	initialPackets           *packetNumberSpace
+	handshakePackets         *packetNumberSpace
+	appDataPackets           *packetNumberSpace
+	lostPackets              lostPacketTracker // only for application-data packet number space
 	// send time of the largest acknowledged packet, across all packet number spaces
 	largestAckedTime monotime.Time
 
@@ -138,6 +139,19 @@ type sentPacketHandler struct {
 type RuntimeStats struct {
 	CongestionController          string
 	CongestionState               string
+	BBRMode                       string
+	BBRBandwidthEstimate          uint64
+	BBRMinRTT                     time.Duration
+	BBRPacingGain                 float64
+	BBRCwndGain                   float64
+	BBRTargetCwnd                 protocol.ByteCount
+	BBRRoundTripCount             int64
+	BBRFullBandwidthReached       bool
+	BBRRecoveryState              string
+	BBRAppLimited                 bool
+	BBRAckAggregationHeight       protocol.ByteCount
+	BBRProbeBWCycleIndex          int
+	BBRRecoveryWindow             protocol.ByteCount
 	CongestionWindow              protocol.ByteCount
 	BytesInFlight                 protocol.ByteCount
 	PacingRate                    uint64
@@ -202,6 +216,7 @@ func NewSentPacketHandler(
 		rttStats:                       rttStats,
 		connStats:                      connStats,
 		congestion:                     congestion,
+		congestionControllerType:       "default",
 		ignorePacketsBelow:             ignorePacketsBelow,
 		perspective:                    pers,
 		qlogger:                        qlogger,
@@ -221,6 +236,20 @@ func (h *sentPacketHandler) SetCubicCongestionControl() {
 		congestion.DefaultClock{}, h.rttStats, h.connStats,
 		h.initialMaxDatagramSize, false, h.qlogger,
 	)
+	h.congestionControllerType = "cubic"
+}
+
+// SetBBRCongestionControl selects the experimental BBRv1 controller. It must
+// be called before application data is sent; already-sent packets remain owned
+// by the transport and unknown sampler entries are ignored on ACK/loss.
+func (h *sentPacketHandler) SetBBRCongestionControl() {
+	bbr := congestion.NewBBRSender(
+		congestion.DefaultClock{}, h.rttStats, h.connStats,
+		h.initialMaxDatagramSize, h.qlogger,
+	)
+	bbr.SetBytesInFlight(h.bytesInFlight)
+	h.congestion = bbr
+	h.congestionControllerType = "bbr"
 }
 
 func (h *sentPacketHandler) removeFromBytesInFlight(p *packet) {
@@ -360,7 +389,15 @@ func (h *sentPacketHandler) SentPacket(
 			h.numProbesToSend--
 		}
 	}
-	h.congestion.OnPacketSent(t, h.bytesInFlight, pn, size, isAckEliciting)
+	if cc, ok := h.congestion.(congestion.SendAlgorithmEncryptionLevelAware); ok {
+		priorInFlight := h.bytesInFlight
+		if isAckEliciting {
+			priorInFlight -= size
+		}
+		cc.OnPacketSentWithEncryptionLevel(encLevel, t, priorInFlight, pn, size, isAckEliciting)
+	} else {
+		h.congestion.OnPacketSent(t, h.bytesInFlight, pn, size, isAckEliciting)
+	}
 
 	if encLevel == protocol.Encryption1RTT && h.ecnTracker != nil {
 		h.ecnTracker.SentPacket(pn, ecn)
@@ -488,7 +525,11 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 	if encLevel == protocol.Encryption1RTT && h.ecnTracker != nil && largestAcked > pnSpace.largestAcked {
 		congested := h.ecnTracker.HandleNewlyAcked(ackedPackets, int64(ack.ECT0), int64(ack.ECT1), int64(ack.ECNCE))
 		if congested {
-			h.congestion.OnCongestionEvent(largestAcked, 0, priorInFlight)
+			if cc, ok := h.congestion.(congestion.SendAlgorithmEncryptionLevelAware); ok {
+				cc.OnCongestionEventWithEncryptionLevel(protocol.Encryption1RTT, largestAcked, 0, priorInFlight)
+			} else {
+				h.congestion.OnCongestionEvent(largestAcked, 0, priorInFlight)
+			}
 		}
 	}
 
@@ -504,7 +545,11 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 			if cc, ok := h.congestion.(congestion.SendAlgorithmApplicationDataPending); ok && h.applicationDataPending != nil {
 				cc.SetApplicationDataPending(h.applicationDataPending())
 			}
-			h.congestion.OnPacketAcked(p.PacketNumber, p.Length, priorInFlight, rcvTime)
+			if cc, ok := h.congestion.(congestion.SendAlgorithmEncryptionLevelAware); ok {
+				cc.OnPacketAckedWithEncryptionLevel(p.EncryptionLevel, p.PacketNumber, p.Length, priorInFlight, rcvTime)
+			} else {
+				h.congestion.OnPacketAcked(p.PacketNumber, p.Length, priorInFlight, rcvTime)
+			}
 		}
 		if p.EncryptionLevel == protocol.Encryption1RTT {
 			acked1RTTPacket = true
@@ -679,9 +724,13 @@ func (h *sentPacketHandler) RuntimeStats() RuntimeStats {
 		recoveryExit = runtime.GetRecoveryExit()
 		recoveryDuration = runtime.GetRecoveryDuration()
 	}
+	var bbrStats congestion.SendAlgorithmBBRRuntimeStats
+	if runtime, ok := h.congestion.(congestion.SendAlgorithmBBRRuntimeStats); ok {
+		bbrStats = runtime
+	}
 	baseRTT := max(h.rttStats.LatestRTT(), h.rttStats.SmoothedRTT())
 	baseTimeThreshold := max(time.Duration(timeThreshold*float64(baseRTT)), protocol.TimerGranularity)
-	return RuntimeStats{
+	stats := RuntimeStats{
 		CongestionController:          controllerName,
 		CongestionState:               state,
 		CongestionWindow:              h.congestion.GetCongestionWindow(),
@@ -711,6 +760,22 @@ func (h *sentPacketHandler) RuntimeStats() RuntimeStats {
 		AdaptivePacketThreshold:       max(packetThreshold, h.adaptivePacketThreshold),
 		AdaptiveTimeThreshold:         min(max(baseTimeThreshold, maxAdaptiveTimeThresholdRTTs*baseRTT), max(baseTimeThreshold, h.adaptiveTimeThreshold)),
 	}
+	if bbrStats != nil {
+		stats.BBRMode = bbrStats.GetBBRMode()
+		stats.BBRBandwidthEstimate = bbrStats.GetBandwidthEstimate()
+		stats.BBRMinRTT = bbrStats.GetMinRTT()
+		stats.BBRPacingGain = bbrStats.GetPacingGain()
+		stats.BBRCwndGain = bbrStats.GetCwndGain()
+		stats.BBRTargetCwnd = bbrStats.GetTargetCwnd()
+		stats.BBRRoundTripCount = bbrStats.GetRoundTripCount()
+		stats.BBRFullBandwidthReached = bbrStats.GetFullBandwidthReached()
+		stats.BBRRecoveryState = bbrStats.GetRecoveryState()
+		stats.BBRAppLimited = bbrStats.GetAppLimited()
+		stats.BBRAckAggregationHeight = bbrStats.GetAckAggregationHeight()
+		stats.BBRProbeBWCycleIndex = bbrStats.GetProbeBWCycleIndex()
+		stats.BBRRecoveryWindow = bbrStats.GetRecoveryWindow()
+	}
+	return stats
 }
 
 // Packets are returned in ascending packet number order.
@@ -1068,7 +1133,11 @@ func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protoc
 					if hasCubicRuntime {
 						priorCutbacks = cubicRuntime.GetCwndCutbacks()
 					}
-					h.congestion.OnCongestionEvent(pn, p.Length, priorInFlight)
+					if cc, ok := h.congestion.(congestion.SendAlgorithmEncryptionLevelAware); ok {
+						cc.OnCongestionEventWithEncryptionLevel(p.EncryptionLevel, pn, p.Length, priorInFlight)
+					} else {
+						h.congestion.OnCongestionEvent(pn, p.Length, priorInFlight)
+					}
 					if hasCubicRuntime && cubicRuntime.GetCwndCutbacks() > priorCutbacks {
 						h.cutbackDueToLoss++
 					}
@@ -1364,13 +1433,16 @@ func (h *sentPacketHandler) MigratedPath(now monotime.Time, initialMaxDatagramSi
 	for pn := range h.appDataPackets.history.PathProbes() {
 		h.appDataPackets.history.RemovePathProbe(pn)
 	}
-	h.congestion = congestion.NewCubicSender(
-		congestion.DefaultClock{},
-		h.rttStats,
-		h.connStats,
-		initialMaxDatagramSize,
-		true, // use Reno
-		h.qlogger,
-	)
+	switch h.congestionControllerType {
+	case "cubic":
+		h.congestion = congestion.NewCubicSender(congestion.DefaultClock{}, h.rttStats, h.connStats, initialMaxDatagramSize, false, h.qlogger)
+	case "bbr":
+		bbr := congestion.NewBBRSender(congestion.DefaultClock{}, h.rttStats, h.connStats, initialMaxDatagramSize, h.qlogger)
+		bbr.SetBytesInFlight(h.bytesInFlight)
+		h.congestion = bbr
+	default:
+		h.congestionControllerType = "default"
+		h.congestion = congestion.NewCubicSender(congestion.DefaultClock{}, h.rttStats, h.connStats, initialMaxDatagramSize, true, h.qlogger)
+	}
 	h.setLossDetectionTimer(now)
 }

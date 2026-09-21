@@ -229,40 +229,19 @@ type Conn struct {
 	qlogger   qlogwriter.Recorder
 	logger    utils.Logger
 
-	runtimeStatsMu              sync.RWMutex
-	runtimeStats                RuntimeStats
-	packetsPacked               atomic.Uint64
-	packedBytes                 atomic.Uint64
-	pacingWakeups               atomic.Uint64
-	receivedPacketsTotal        atomic.Uint64
-	receivedBytes               atomic.Uint64
-	sendScheduleRequests        atomic.Uint64
-	sendScheduleCoalesced       atomic.Uint64
-	schedulerTurns              atomic.Uint64
-	txTurns                     atomic.Uint64
-	txPackets                   atomic.Uint64
-	txBytes                     atomic.Uint64
-	rxTurns                     atomic.Uint64
-	rxPackets                   atomic.Uint64
-	txYieldRXPending            atomic.Uint64
-	yieldPacing                 atomic.Uint64
-	yieldCwnd                   atomic.Uint64
-	yieldSendQueue              atomic.Uint64
-	yieldNoData                 atomic.Uint64
-	yieldPTO                    atomic.Uint64
-	yieldOther                  atomic.Uint64
-	gsoBatchBreakShortPacket    uint64
-	gsoBatchBreakPacing         uint64
-	gsoBatchBreakCwnd           uint64
-	gsoBatchBreakECN            uint64
-	gsoBatchBreakTXTurn         uint64
-	gsoBatchBreakBufferCapacity uint64
-	gsoBatchBreakNoData         uint64
-	gsoBatchBreakSendQueue      uint64
-	fullPMTUPackets             uint64
-	shortPackets                uint64
-	candidateGSOBatchPackets    uint64
-	packedPacketSizeBuckets     [8]uint64
+	runtimeStatsMu           sync.RWMutex
+	runtimeStats             RuntimeStats
+	packetsPacked            atomic.Uint64
+	packedBytes              atomic.Uint64
+	pacingWakeups            atomic.Uint64
+	receivedPacketsTotal     atomic.Uint64
+	receivedBytes            atomic.Uint64
+	sendScheduleRequests     atomic.Uint64
+	sendScheduleCoalesced    atomic.Uint64
+	fullPMTUPackets          uint64
+	shortPackets             uint64
+	candidateGSOBatchPackets uint64
+	packedPacketSizeBuckets  [8]uint64
 }
 
 type congestionControlRequest struct {
@@ -770,7 +749,6 @@ runLoop:
 		}
 
 		if c.sendQueue.WouldBlock() {
-			c.yieldSendQueue.Add(1)
 			// The send queue is still busy sending out packets. Wait until there's space to enqueue new packets.
 			sendQueueAvailable = c.sendQueue.Available()
 			// Cancel the pacing timer, as we can't send any more packets until the send queue is available again.
@@ -789,7 +767,6 @@ runLoop:
 			break runLoop
 		}
 		if c.sendQueue.WouldBlock() {
-			c.yieldSendQueue.Add(1)
 			// The send queue is still busy sending out packets. Wait until there's space to enqueue new packets.
 			sendQueueAvailable = c.sendQueue.Available()
 			// Cancel the pacing timer, as we can't send any more packets until the send queue is available again.
@@ -1084,7 +1061,6 @@ func (c *Conn) handlePackets() (wasProcessed bool, _ error) {
 		}
 		processed, err := c.handleOnePacket(p, datagramPayloadChecksum)
 		if err != nil {
-			c.recordRXTurn(packetsProcessed)
 			return false, err
 		}
 		if processed {
@@ -1109,16 +1085,7 @@ func (c *Conn) handlePackets() (wasProcessed bool, _ error) {
 		default:
 		}
 	}
-	c.recordRXTurn(packetsProcessed)
 	return wasProcessed, nil
-}
-
-func (c *Conn) recordRXTurn(packets uint64) {
-	if packets == 0 {
-		return
-	}
-	c.rxTurns.Add(1)
-	c.rxPackets.Add(packets)
 }
 
 func (c *Conn) handleOnePacket(rp receivedPacket, datagramPayloadChecksum qlog.DatagramPayloadChecksum) (wasProcessed bool, _ error) {
@@ -2558,26 +2525,15 @@ func (c *Conn) applyTransportParameters() {
 func (c *Conn) triggerSending(now monotime.Time) error {
 	c.pacingDeadline = 0
 	c.pacingWakeups.Add(1)
-	c.schedulerTurns.Add(1)
 
 	sendMode := c.sentPacketHandler.SendMode(now)
 	switch sendMode {
 	case ackhandler.SendAny:
-		packetsBefore, bytesBefore := c.packetsPacked.Load(), c.packedBytes.Load()
-		err := c.sendPackets(now)
-		packetsSent, bytesSent := c.packetsPacked.Load()-packetsBefore, c.packedBytes.Load()-bytesBefore
-		if packetsSent > 0 {
-			c.txTurns.Add(1)
-			c.txPackets.Add(packetsSent)
-			c.txBytes.Add(bytesSent)
-		}
-		return err
+		return c.sendPackets(now)
 	case ackhandler.SendNone:
-		c.yieldCwnd.Add(1)
 		c.blocked = blockModeHardBlocked
 		return nil
 	case ackhandler.SendPacingLimited:
-		c.yieldPacing.Add(1)
 		deadline := c.sentPacketHandler.TimeUntilSend()
 		if deadline.IsZero() {
 			deadline = deadlineSendImmediately
@@ -2588,14 +2544,12 @@ func (c *Conn) triggerSending(now monotime.Time) error {
 		// sends enough ACKs to allow its peer to utilize the bandwidth.
 		return c.maybeSendAckOnlyPacket(now)
 	case ackhandler.SendAck:
-		c.yieldCwnd.Add(1)
 		// We can at most send a single ACK only packet.
 		// There will only be a new ACK after receiving new packets.
 		// SendAck is only returned when we're congestion limited, so we don't need to set the pacing timer.
 		c.blocked = blockModeCongestionLimited
 		return c.maybeSendAckOnlyPacket(now)
 	case ackhandler.SendPTOInitial, ackhandler.SendPTOHandshake, ackhandler.SendPTOAppData:
-		c.yieldPTO.Add(1)
 		if err := c.sendProbePacket(sendMode, now); err != nil {
 			return err
 		}
@@ -2605,7 +2559,6 @@ func (c *Conn) triggerSending(now monotime.Time) error {
 		}
 		return c.triggerSending(now)
 	default:
-		c.yieldOther.Add(1)
 		return fmt.Errorf("BUG: invalid send mode %d", sendMode)
 	}
 }
@@ -2688,7 +2641,6 @@ func (c *Conn) sendPacketsWithoutGSO(now monotime.Time) error {
 		ecn := c.sentPacketHandler.ECNMode(true)
 		if _, _, err := c.appendOneShortHeaderPacket(buf, c.maxPacketSize(), ecn, now); err != nil {
 			if err == errNothingToPack {
-				c.yieldNoData.Add(1)
 				buf.Release()
 				return nil
 			}
@@ -2703,12 +2655,10 @@ func (c *Conn) sendPacketsWithoutGSO(now monotime.Time) error {
 		}
 		sendMode := c.sentPacketHandler.SendMode(now)
 		if sendMode == ackhandler.SendPacingLimited {
-			c.yieldPacing.Add(1)
 			c.resetPacingDeadline()
 			return nil
 		}
 		if sendMode != ackhandler.SendAny {
-			c.recordSendModeYield(sendMode)
 			return nil
 		}
 		// Prioritize receiving of packets over sending out more packets.
@@ -2716,7 +2666,6 @@ func (c *Conn) sendPacketsWithoutGSO(now monotime.Time) error {
 		hasPackets := !c.receivedPackets.Empty()
 		c.receivedPacketMx.Unlock()
 		if hasPackets {
-			c.txYieldRXPending.Add(1)
 			c.pacingDeadline = deadlineSendImmediately
 			return nil
 		}
@@ -2746,9 +2695,7 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 			if err != errNothingToPack {
 				return err
 			}
-			c.gsoBatchBreakNoData++
 			if buf.Len() == 0 {
-				c.yieldNoData.Add(1)
 				buf.Release()
 				return nil
 			}
@@ -2761,7 +2708,6 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 				segmentSize = size
 			}
 			if packetsInTurn >= maxPacketsPerTXTurn {
-				c.gsoBatchBreakTXTurn++
 				dontSendMore = true
 			}
 		}
@@ -2769,14 +2715,10 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 		if !dontSendMore {
 			sendMode := c.sentPacketHandler.SendMode(now)
 			if sendMode == ackhandler.SendPacingLimited {
-				c.yieldPacing.Add(1)
-				c.gsoBatchBreakPacing++
 				c.resetPacingDeadline()
 			}
 			if sendMode != ackhandler.SendAny {
 				if sendMode != ackhandler.SendPacingLimited {
-					c.gsoBatchBreakCwnd++
-					c.recordSendModeYield(sendMode)
 				}
 				dontSendMore = true
 			}
@@ -2785,8 +2727,6 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 			if budgeter, ok := c.sentPacketHandler.(interface {
 				AvailablePacingBudget(monotime.Time) protocol.ByteCount
 			}); ok && budgeter.AvailablePacingBudget(now) < max(1, segmentSize) {
-				c.yieldCwnd.Add(1)
-				c.gsoBatchBreakPacing++
 				dontSendMore = true
 			}
 		}
@@ -2801,11 +2741,8 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 		// 4. We still have enough space for another full-size packet in the buffer
 		if !dontSendMore {
 			if !eligible || size != segmentSize {
-				c.gsoBatchBreakShortPacket++
 			} else if nextECN != ecn {
-				c.gsoBatchBreakECN++
 			} else if buf.Len()+segmentSize > buf.Cap() {
-				c.gsoBatchBreakBufferCapacity++
 			} else {
 				continue
 			}
@@ -2827,7 +2764,6 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 			return nil
 		}
 		if c.sendQueue.WouldBlock() {
-			c.gsoBatchBreakSendQueue++
 			return nil
 		}
 
@@ -2836,7 +2772,6 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 		hasPackets := !c.receivedPackets.Empty()
 		c.receivedPacketMx.Unlock()
 		if hasPackets {
-			c.txYieldRXPending.Add(1)
 			c.pacingDeadline = deadlineSendImmediately
 			return nil
 		}
@@ -2879,21 +2814,6 @@ func (c *Conn) recordGSOPacketSize(size, pmtu protocol.ByteCount, eligible bool)
 		bucket = 6
 	}
 	c.packedPacketSizeBuckets[bucket]++
-}
-
-func (c *Conn) recordSendModeYield(mode ackhandler.SendMode) {
-	switch mode {
-	case ackhandler.SendNone, ackhandler.SendAck:
-		c.yieldCwnd.Add(1)
-	case ackhandler.SendPacingLimited:
-		c.yieldPacing.Add(1)
-	case ackhandler.SendPTOInitial, ackhandler.SendPTOHandshake, ackhandler.SendPTOAppData:
-		c.yieldPTO.Add(1)
-	case ackhandler.SendAny:
-		c.yieldOther.Add(1)
-	default:
-		c.yieldOther.Add(1)
-	}
 }
 
 func (c *Conn) resetPacingDeadline() {

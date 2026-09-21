@@ -289,11 +289,6 @@ func TestDeterministicWANPerformanceHarness(t *testing.T) {
 						datagramFullRatio = float64(datagramFullSamples) / float64(sampleCount)
 					}
 					t.Logf("trace_seed=1 cc=%s schedule=drop-every-N/reorder-groups-every-128-full-size-packets capped-at-12 rtt=%s loss_every=%d reorder=%d goodput_mbps=%.3f loaded_rtt_p50=%s loaded_rtt_p95=%s loaded_rtt_p99=%s bbr_mode=%s bbr_bw_bps=%d cwnd_final=%d cwnd_avg=%0.f cwnd_min=%d cwnd_max=%d pacing_final_Bps=%d pacing_avg_Bps=%0.f pacing_min_Bps=%d pacing_max_Bps=%d adaptive_packet_threshold=%d adaptive_time_threshold=%s reported_losses=%d loss_events=%d loss_by_packet=%d loss_by_time=%d spurious=%d spurious_after_packet=%d spurious_after_time=%d cwnd_cutbacks=%d cutback_loss=%d recovery_enter=%d recovery_exit=%d recovery_duration=%s injected_drops=%d reorder_ops=%d reordered_packets=%d datagram_full_ratio=%.3f datagram_blocked_ratio=%.3f packets_per_wakeup=%.2f segments_per_write_avg=%.2f app_limited_transitions=%d cubic_epoch_resets=%d", controller, tc.rtt, tc.lossEvery, tc.reorderSize, float64(receivedBytes.Load())*8/duration.Seconds()/1e6, percentile(50), percentile(95), percentile(99), stats.BBRMode, stats.BBRBandwidthEstimate, stats.CongestionWindow, cwndAvg, cwndMin, cwndMax, stats.PacingRate, pacingAvg, pacingMin, pacingMax, stats.AdaptivePacketThreshold, stats.AdaptiveTimeThreshold, stats.PacketsLost, stats.LossEvents, stats.LossByPacketThreshold, stats.LossByTimeThreshold, stats.SpuriousLosses, stats.SpuriousAfterPacketThreshold, stats.SpuriousAfterTimeThreshold, stats.CwndCutbacks, stats.CutbackDueToLossEvent, stats.RecoveryEnter, stats.RecoveryExit, stats.RecoveryDuration, router.dropped.Load(), router.reorderOps.Load(), router.reordered.Load(), datagramFullRatio, blockedRatio, float64(stats.PacketsPacked)/float64(max(stats.PacingWakeups, 1)), stats.SegmentsPerWriteAverage, stats.ApplicationLimitedTransitions, stats.CubicEpochResets)
-					avgTXPackets := float64(0)
-					if stats.TXTurns != 0 {
-						avgTXPackets = float64(stats.TXPackets) / float64(stats.TXTurns)
-					}
-					t.Logf("scheduler tx_turns=%d tx_packets=%d avg_tx_packets_per_turn=%.2f rx_turns=%d rx_packets=%d rx_pending_yields=%d pacing_wakeups=%d", stats.TXTurns, stats.TXPackets, avgTXPackets, stats.RXTurns, stats.RXPackets, stats.TXTurnEndedDueToRXPending, stats.PacingWakeups)
 				})
 			})
 		}

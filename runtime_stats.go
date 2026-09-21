@@ -81,14 +81,6 @@ type RuntimeStats struct {
 	GSOKernelFallbacks            uint64
 	GSOSendErrors                 uint64
 	GSOSegmentsTotal              uint64
-	GSOBatchBreakShortPacket      uint64
-	GSOBatchBreakPacing           uint64
-	GSOBatchBreakCwnd             uint64
-	GSOBatchBreakECN              uint64
-	GSOBatchBreakTXTurn           uint64
-	GSOBatchBreakBufferCapacity   uint64
-	GSOBatchBreakNoData           uint64
-	GSOBatchBreakSendQueue        uint64
 	FullPMTUPackets               uint64
 	ShortPackets                  uint64
 	CandidateGSOBatchPackets      uint64
@@ -104,19 +96,6 @@ type RuntimeStats struct {
 	PacingWakeups                 uint64
 	SendScheduleRequests          uint64
 	SendScheduleCoalesced         uint64
-	SchedulerTurns                uint64
-	TXTurns                       uint64
-	TXPackets                     uint64
-	TXBytes                       uint64
-	RXTurns                       uint64
-	RXPackets                     uint64
-	TXTurnEndedDueToRXPending     uint64
-	YieldPacing                   uint64
-	YieldCwnd                     uint64
-	YieldSendQueue                uint64
-	YieldNoData                   uint64
-	YieldPTO                      uint64
-	YieldOther                    uint64
 	ReceivedPacketQueueDrops      uint64
 	ReceivedPackets               uint64
 	ReceivedBytes                 uint64
@@ -232,14 +211,6 @@ func (c *Conn) updateRuntimeStats() {
 		out.SegmentsPerWriteBuckets = s.SegmentsPerWriteBuckets
 	}
 	out.ReceivedPacketQueueDrops = c.receivedPacketQueueDrops.Load()
-	out.GSOBatchBreakShortPacket = c.gsoBatchBreakShortPacket
-	out.GSOBatchBreakPacing = c.gsoBatchBreakPacing
-	out.GSOBatchBreakCwnd = c.gsoBatchBreakCwnd
-	out.GSOBatchBreakECN = c.gsoBatchBreakECN
-	out.GSOBatchBreakTXTurn = c.gsoBatchBreakTXTurn
-	out.GSOBatchBreakBufferCapacity = c.gsoBatchBreakBufferCapacity
-	out.GSOBatchBreakNoData = c.gsoBatchBreakNoData
-	out.GSOBatchBreakSendQueue = c.gsoBatchBreakSendQueue
 	out.FullPMTUPackets = c.fullPMTUPackets
 	out.ShortPackets = c.shortPackets
 	out.CandidateGSOBatchPackets = c.candidateGSOBatchPackets
@@ -250,19 +221,6 @@ func (c *Conn) updateRuntimeStats() {
 	out.PacingWakeups = c.pacingWakeups.Load()
 	out.SendScheduleRequests = c.sendScheduleRequests.Load()
 	out.SendScheduleCoalesced = c.sendScheduleCoalesced.Load()
-	out.SchedulerTurns = c.schedulerTurns.Load()
-	out.TXTurns = c.txTurns.Load()
-	out.TXPackets = c.txPackets.Load()
-	out.TXBytes = c.txBytes.Load()
-	out.RXTurns = c.rxTurns.Load()
-	out.RXPackets = c.rxPackets.Load()
-	out.TXTurnEndedDueToRXPending = c.txYieldRXPending.Load()
-	out.YieldPacing = c.yieldPacing.Load()
-	out.YieldCwnd = c.yieldCwnd.Load()
-	out.YieldSendQueue = c.yieldSendQueue.Load()
-	out.YieldNoData = c.yieldNoData.Load()
-	out.YieldPTO = c.yieldPTO.Load()
-	out.YieldOther = c.yieldOther.Load()
 	if c.mtuDiscoverer != nil {
 		out.CurrentPMTU = uint64(c.mtuDiscoverer.CurrentSize())
 	} else {

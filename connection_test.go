@@ -2024,7 +2024,6 @@ func TestConnectionGSOBatchesCONNECTIPPacketsBelowPMTU(t *testing.T) {
 	require.EqualValues(t, 3, stats.CandidateGSOBatchPackets)
 	require.EqualValues(t, 3, stats.ShortPackets)
 	require.EqualValues(t, 3, stats.PackedPacketSizeBuckets[5], "1201..1280 byte packet bucket")
-	require.EqualValues(t, 1, stats.GSOBatchBreakNoData)
 }
 
 func TestConnectionScheduleSendingCoalescesWakeups(t *testing.T) {

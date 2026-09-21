@@ -2718,8 +2718,6 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 				c.resetPacingDeadline()
 			}
 			if sendMode != ackhandler.SendAny {
-				if sendMode != ackhandler.SendPacingLimited {
-				}
 				dontSendMore = true
 			}
 		}

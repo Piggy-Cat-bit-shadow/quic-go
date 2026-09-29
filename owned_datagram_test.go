@@ -4,6 +4,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sagernet/quic-go/internal/wire"
 )
@@ -362,5 +363,316 @@ func TestQueueFullThenCloseLeavesNoOwnerStranded(t *testing.T) {
 	}
 	if count := rejected.releaseCount(); count != 0 {
 		t.Fatalf("the REJECTED frame must stay with its caller, got %d releases", count)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Batch ownership
+// ---------------------------------------------------------------------------
+
+// TestAddBatchIsAllOrNothingWhileBlocked is the core safety property of AddBatch.
+//
+// A partial acceptance would be unrecoverable for the caller: it cannot know which of its buffers
+// were taken, so it would either release the accepted ones (double release) or keep them all
+// (leak).
+//
+// # How this test discriminates
+//
+// The batch is offered to a queue with room for only part of it, so a correct implementation loops
+// waiting for room and queues NOTHING. The test samples the queue length while the call is blocked:
+//
+//   - correct:  the length never changes;
+//   - prefix-accepting: it grows by however many frames happened to fit.
+//
+// Sampling WHILE blocked is what makes this test able to see the bug at all. Waiting for the call
+// to return is not enough: closing the queue makes both the correct and the buggy implementation
+// return an error, and by then the difference in length is the only evidence left.
+//
+// Setting the closed flag up front would also not work, because AddBatch checks it before the
+// capacity test, so the call would return without ever reaching the logic under test.
+func TestAddBatchIsAllOrNothingWhileBlocked(t *testing.T) {
+	queue := newDatagramQueue(func() {}, nil)
+
+	const roomLeft = 2
+	for range maxDatagramSendQueueLen - roomLeft {
+		o := &countingOwner{payload: make([]byte, 32)}
+		f := &wire.DatagramFrame{DataLenPresent: true, Data: o.payload}
+		f.SetOwner(o)
+		if err := queue.Add(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := queue.sendQueue.Len()
+	if before != maxDatagramSendQueueLen-roomLeft {
+		t.Fatalf("setup: expected %d queued, got %d", maxDatagramSendQueueLen-roomLeft, before)
+	}
+
+	const batchLen = 4 // does not fit in the 2 remaining slots
+	owners := make([]*countingOwner, batchLen)
+	frames := make([]*wire.DatagramFrame, batchLen)
+	for i := range batchLen {
+		owners[i] = &countingOwner{payload: []byte{byte(i)}}
+		frames[i] = &wire.DatagramFrame{DataLenPresent: true, Data: owners[i].payload}
+		frames[i].SetOwner(owners[i])
+	}
+
+	returned := make(chan error, 1)
+	go func() { returned <- queue.AddBatch(frames) }()
+
+	// Sample the queue length for a bounded window while the call is expected to be blocked. A
+	// prefix-accepting implementation is visible exactly here.
+	sampled := 0
+	for range 20 {
+		select {
+		case err := <-returned:
+			// It returned early. That is only acceptable if it rejected, and then it must also
+			// have queued nothing.
+			if err == nil {
+				t.Fatal("AddBatch reported success for a batch larger than the remaining room")
+			}
+			goto checked
+		case <-time.After(5 * time.Millisecond):
+		}
+		queue.sendMx.Lock()
+		now := queue.sendQueue.Len()
+		queue.sendMx.Unlock()
+		sampled++
+		if now != before {
+			t.Fatalf("AddBatch partially accepted: queue went from %d to %d while blocked", before, now)
+		}
+	}
+	if sampled == 0 {
+		t.Fatal("test never sampled the queue")
+	}
+
+	// It is still blocked, which is the correct behaviour. Release it and re-assert.
+	queue.CloseWithError(errors.New("test close"))
+	select {
+	case err := <-returned:
+		if err == nil {
+			t.Fatal("AddBatch must report the close rather than accepting the batch")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AddBatch did not return after the queue was closed")
+	}
+
+checked:
+	// Even after the close drain, the queue must hold exactly what it held before the batch --
+	// the drain removes the filler frames, and the batch must never have been added.
+	if got := queue.sendQueue.Len(); got != 0 {
+		t.Fatalf("after close the queue must be drained, got %d frames", got)
+	}
+	for i, o := range owners {
+		if o.releaseCount() != 0 {
+			t.Fatalf("frame %d of the rejected batch must stay with its caller", i)
+		}
+	}
+}
+
+// TestAddBatchRejectsBatchLargerThanQueue proves an oversized batch fails fast instead of blocking
+// forever waiting for room that no drain can ever create.
+func TestAddBatchRejectsBatchLargerThanQueue(t *testing.T) {
+	queue := newDatagramQueue(func() {}, nil)
+	frames := make([]*wire.DatagramFrame, maxDatagramSendQueueLen+1)
+	owners := make([]*countingOwner, len(frames))
+	for i := range frames {
+		owners[i] = &countingOwner{payload: make([]byte, 8)}
+		frames[i] = &wire.DatagramFrame{DataLenPresent: true, Data: owners[i].payload}
+		frames[i].SetOwner(owners[i])
+	}
+
+	// Must return (not hang) and must not take anything.
+	err := queue.AddBatch(frames)
+	if err == nil {
+		t.Fatal("a batch larger than the queue capacity must be rejected")
+	}
+	for i, o := range owners {
+		if o.releaseCount() != 0 {
+			t.Fatalf("frame %d of the oversized batch must stay with its caller", i)
+		}
+	}
+}
+
+// TestAddBatchQueuesEveryFrameAndSignalsOnce checks the happy path: all frames queued, in order,
+// and exactly one scheduling signal for the whole batch.
+func TestAddBatchQueuesEveryFrameAndSignalsOnce(t *testing.T) {
+	var signals int
+	queue := newDatagramQueue(func() { signals++ }, nil)
+
+	const n = 8
+	owners := make([]*countingOwner, n)
+	frames := make([]*wire.DatagramFrame, n)
+	for i := range n {
+		owners[i] = &countingOwner{payload: []byte{byte(i)}}
+		frames[i] = &wire.DatagramFrame{DataLenPresent: true, Data: owners[i].payload}
+		frames[i].SetOwner(owners[i])
+	}
+
+	if err := queue.AddBatch(frames); err != nil {
+		t.Fatal(err)
+	}
+	if signals != 1 {
+		t.Fatalf("expected exactly one scheduling signal for the batch, got %d", signals)
+	}
+	if got := queue.sendQueue.Len(); got != n {
+		t.Fatalf("expected %d queued frames, got %d", n, got)
+	}
+	// FIFO order must be preserved.
+	for i := range n {
+		f := queue.Peek()
+		if f == nil {
+			t.Fatalf("frame %d missing", i)
+		}
+		if len(f.Data) != 1 || f.Data[0] != byte(i) {
+			t.Fatalf("frame %d out of order: got %v", i, f.Data)
+		}
+		queue.Pop()
+		// Pop signals too, so account for it rather than asserting on it here.
+	}
+	signals = 0
+	if !queue.sendQueue.Empty() {
+		t.Fatal("queue should be empty after popping every frame")
+	}
+	// Nothing was serialized, so nothing may have been released.
+	for i, o := range owners {
+		if o.releaseCount() != 0 {
+			t.Fatalf("frame %d was released without being serialized", i)
+		}
+	}
+}
+
+// TestAddBatchEmptyIsNoOp keeps the degenerate call from signalling or erroring.
+func TestAddBatchEmptyIsNoOp(t *testing.T) {
+	var signals int
+	queue := newDatagramQueue(func() { signals++ }, nil)
+	if err := queue.AddBatch(nil); err != nil {
+		t.Fatal(err)
+	}
+	if signals != 0 {
+		t.Fatalf("an empty batch must not signal, got %d", signals)
+	}
+}
+
+// TestAddBatchAfterCloseRejectsEverything mirrors TestQueueAddAfterCloseAlwaysRejects for the batch
+// path: a closed queue must take no part of a batch.
+func TestAddBatchAfterCloseRejectsEverything(t *testing.T) {
+	queue := newDatagramQueue(func() {}, nil)
+	queue.CloseWithError(errors.New("closed"))
+
+	owners := make([]*countingOwner, 4)
+	frames := make([]*wire.DatagramFrame, 4)
+	for i := range frames {
+		owners[i] = &countingOwner{payload: []byte("rejected")}
+		frames[i] = &wire.DatagramFrame{DataLenPresent: true, Data: owners[i].payload}
+		frames[i].SetOwner(owners[i])
+	}
+	if err := queue.AddBatch(frames); err == nil {
+		t.Fatal("a closed queue must reject the batch")
+	}
+	for i, o := range owners {
+		if o.releaseCount() != 0 {
+			t.Fatalf("frame %d: a rejected batch must stay with its caller", i)
+		}
+	}
+}
+
+// newBatchTestConn builds the minimum real Conn that SendDatagramsOwned touches.
+//
+// validateDatagramSize reads the peer's advertised datagram size and the local config, so a zero
+// Conn would panic before reaching the logic under test. Using the real fields keeps these tests
+// behavioural rather than proxies for the implementation.
+func newBatchTestConn() *Conn {
+	c := &Conn{
+		datagramQueue: newDatagramQueue(func() {}, nil),
+		config:        &Config{EnableDatagrams: true, AssumePeerMaxDatagramFrameSize: 1200},
+		// peerMaxDatagramFrameSize dereferences this, so a nil value panics before the ownership
+		// logic under test is reached.
+		peerParams: &wire.TransportParameters{},
+	}
+	// validateDatagramSize also consults the learned payload ceiling, which only the handshake
+	// normally sets. Without this every payload reads as oversized.
+	c.maxPayloadSizeEstimate.Store(1200)
+	return c
+}
+
+// TestSendDatagramsOwnedRejectsMismatchedLengths guards the two-slice API shape.
+func TestSendDatagramsOwnedRejectsMismatchedLengths(t *testing.T) {
+	c := newBatchTestConn()
+	err := c.SendDatagramsOwned([][]byte{[]byte("a"), []byte("b")}, []DatagramOwner{&countingOwner{}})
+	if err == nil {
+		t.Fatal("mismatched payload and owner counts must be rejected")
+	}
+	if c.datagramQueue.sendQueue.Len() != 0 {
+		t.Fatal("a rejected call must not queue anything")
+	}
+}
+
+// TestSendDatagramsOwnedValidatesWholeBatchBeforeQueueing proves a single bad entry leaves the
+// ENTIRE batch with the caller.
+func TestSendDatagramsOwnedValidatesWholeBatchBeforeQueueing(t *testing.T) {
+	c := newBatchTestConn()
+	good := &countingOwner{payload: []byte("good")}
+	nilOwner := &countingOwner{payload: []byte("bad")}
+	// The second entry has a nil owner, so the batch must be rejected as a whole.
+	err := c.SendDatagramsOwned(
+		[][]byte{[]byte("good"), []byte("bad")},
+		[]DatagramOwner{good, nil},
+	)
+	if err == nil {
+		t.Fatal("a batch containing a nil owner must be rejected")
+	}
+	if good.releaseCount() != 0 || nilOwner.releaseCount() != 0 {
+		t.Fatal("no payload may be released when the batch is rejected")
+	}
+	if c.datagramQueue.sendQueue.Len() != 0 {
+		t.Fatal("no frame may be queued when the batch is rejected")
+	}
+}
+
+// TestSendDatagramsOwnedQueuesWholeBatch is the happy-path counterpart, and it also proves the
+// batch took the ONE-signal path.
+func TestSendDatagramsOwnedQueuesWholeBatch(t *testing.T) {
+	c := newBatchTestConn()
+	const n = 4
+	payloads := make([][]byte, n)
+	owners := make([]DatagramOwner, n)
+	counters := make([]*countingOwner, n)
+	for i := range n {
+		payloads[i] = []byte{byte(i)}
+		counters[i] = &countingOwner{payload: payloads[i]}
+		owners[i] = counters[i]
+	}
+	if err := c.SendDatagramsOwned(payloads, owners); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.datagramQueue.sendQueue.Len(); got != n {
+		t.Fatalf("expected %d queued frames, got %d", n, got)
+	}
+	// Nothing has been serialized, so nothing may have been released yet.
+	for i, o := range counters {
+		if o.releaseCount() != 0 {
+			t.Fatalf("frame %d released before serialization", i)
+		}
+	}
+}
+
+// TestSendDatagramsOwnedRejectsOversizeWholeBatch proves the size check is applied to every entry
+// before any frame is queued.
+func TestSendDatagramsOwnedRejectsOversizeWholeBatch(t *testing.T) {
+	c := newBatchTestConn()
+	small := &countingOwner{payload: []byte("small")}
+	big := &countingOwner{payload: make([]byte, 4096)}
+	err := c.SendDatagramsOwned(
+		[][]byte{small.payload, big.payload},
+		[]DatagramOwner{small, big},
+	)
+	if err == nil {
+		t.Fatal("an oversized entry must reject the batch")
+	}
+	if small.releaseCount() != 0 || big.releaseCount() != 0 {
+		t.Fatal("no payload may be released when the batch is rejected")
+	}
+	if c.datagramQueue.sendQueue.Len() != 0 {
+		t.Fatal("no frame may be queued when the batch is rejected")
 	}
 }

@@ -114,7 +114,9 @@ func (c *rawConn) openControlStream(settings *settingsFrame) (*quic.SendStream, 
 }
 
 func (c *rawConn) TrackStream(str *quic.Stream) *stateTrackingStream {
-	hstr := newStateTrackingStream(str, c, func(b []byte) error { return c.sendDatagram(str.StreamID(), b) })
+	hstr := newStateTrackingStream(str, c,
+		func(b []byte) error { return c.sendDatagram(str.StreamID(), b) },
+		func(payload OwnedDatagramPayload) error { return c.sendDatagramOwned(str.StreamID(), payload) })
 
 	c.streamMx.Lock()
 	c.streams[str.StreamID()] = hstr
@@ -263,6 +265,79 @@ func (c *rawConn) sendDatagram(streamID quic.StreamID, b []byte) error {
 		})
 	}
 	return c.conn.SendDatagram(data)
+}
+
+// OwnedDatagramPayload is a DATAGRAM payload whose ownership can move into the transport, and whose
+// headroom http3 may use to prepend the quarter stream ID WITHOUT copying the payload.
+//
+// It is deliberately an interface of primitives rather than a concrete type, because the two things
+// that meet here -- http3 and the caller's buffer type -- must not depend on each other. http3 never
+// learns what kind of buffer it holds, and the caller never learns how HTTP/3 frames a datagram.
+//
+// # Contract
+//
+// Bytes returns the current payload. Prepend(n) must either return n bytes of writable space
+// immediately BEFORE the current payload -- extending the payload to include them -- or return nil
+// if it cannot. Advance(n) shrinks the payload from the front, undoing a Prepend.
+//
+// Release returns the payload to its owner and is called exactly once by quic-go, after the bytes
+// are in an outgoing packet.
+type OwnedDatagramPayload interface {
+	quic.DatagramOwner
+	Bytes() []byte
+	Prepend(n int) []byte
+	Advance(n int)
+}
+
+// sendDatagramOwned sends one HTTP Datagram while taking ownership of the payload.
+//
+// # Why the quarter stream ID is prepended in place
+//
+// The copying version builds `make([]byte, 0, len(b)+8)` and appends both the varint and the whole
+// payload into it, so every datagram costs a packet-sized allocation AND a packet-sized copy. Here
+// the varint is written into headroom the payload already has, and the payload itself is never
+// touched.
+//
+// # The rollback is part of the contract, not politeness
+//
+// If the payload has no room for the prefix, or the QUIC layer refuses the datagram, the caller must
+// get its buffer back EXACTLY as it handed it over. Callers act on those errors using the payload:
+// the CONNECT-IP sender trims it to build an ICMP Packet Too Big, or hands it to the capsule
+// fallback. Leaving a quarter stream ID glued to the front would hand them a buffer whose first
+// bytes belong to HTTP/3.
+//
+// A payload with no headroom falls back to the copying path rather than failing, so a caller cannot
+// lose datagrams merely because a buffer came from a pool with a different layout.
+func (c *rawConn) sendDatagramOwned(streamID quic.StreamID, payload OwnedDatagramPayload) error {
+	prefixLen := quicvarint.Len(uint64(streamID / 4))
+	header := payload.Prepend(prefixLen)
+	if header == nil {
+		// No headroom: take the copying path. The payload layout is unchanged, so this is safe.
+		return c.sendDatagram(streamID, payload.Bytes())
+	}
+	// Write the varint into exactly the headroom that was reserved. Append never reallocates here
+	// because header has precisely Len(quarterStreamID) bytes of capacity, and the result is
+	// discarded -- the bytes are already in place.
+	_ = quicvarint.Append(header[:0], uint64(streamID/4))
+
+	if c.qlogger != nil {
+		c.qlogger.RecordEvent(qlog.DatagramCreated{
+			QuarterStreamID: uint64(streamID / 4),
+			Raw: qlog.RawInfo{
+				Length:        len(payload.Bytes()),
+				PayloadLength: len(payload.Bytes()) - prefixLen,
+			},
+		})
+	}
+
+	// The bytes handed to QUIC include the prefix. On success ownership passes to the connection and
+	// the caller must not touch the payload again, which is why the rollback runs only on error.
+	err := c.conn.SendDatagramOwned(payload.Bytes(), payload)
+	if err != nil {
+		// Restore the caller's view: remove the quarter stream ID we just wrote.
+		payload.Advance(prefixLen)
+	}
+	return err
 }
 
 func (c *rawConn) receiveDatagrams() error {

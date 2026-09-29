@@ -3055,17 +3055,19 @@ func (c *Conn) onStreamCompleted(id protocol.StreamID) {
 	c.framer.RemoveActiveStream(id)
 }
 
-// SendDatagram sends a message using a QUIC datagram, as specified in RFC 9221,
-// if the peer enabled datagram support.
-// There is no delivery guarantee for DATAGRAM frames, they are not retransmitted if lost.
-// The payload of the datagram needs to fit into a single QUIC packet.
-// In addition, a datagram may be dropped before being sent out if the available packet size suddenly decreases.
-// If the payload is too large to be sent at the current time, a DatagramTooLargeError is returned.
-func (c *Conn) SendDatagram(p []byte) error {
+// validateDatagramSize performs the support and size checks shared by SendDatagram and
+// SendDatagramOwned.
+//
+// It exists so the two APIs cannot drift: a payload that is rejected by one must be rejected by the
+// other, with the same error type, or a caller choosing between them would observe different
+// behaviour for the same traffic.
+//
+// It runs BEFORE any ownership transfer or copy, so an oversized datagram costs nothing beyond the
+// check.
+func (c *Conn) validateDatagramSize(length int) error {
 	if !c.supportsDatagrams() {
 		return errors.New("datagram support disabled")
 	}
-
 	f := &wire.DatagramFrame{DataLenPresent: true}
 	// The payload size estimate is conservative.
 	// Under many circumstances we could send a few more bytes.
@@ -3073,11 +3075,82 @@ func (c *Conn) SendDatagram(p []byte) error {
 		f.MaxDataLen(c.peerMaxDatagramFrameSize(), c.version),
 		protocol.ByteCount(c.maxPayloadSizeEstimate.Load()),
 	)
-	if protocol.ByteCount(len(p)) > maxDataLen {
+	if protocol.ByteCount(length) > maxDataLen {
 		return &DatagramTooLargeError{MaxDatagramPayloadSize: int64(maxDataLen)}
 	}
+	return nil
+}
+
+// SendDatagram sends a message using a QUIC datagram, as specified in RFC 9221,
+// if the peer enabled datagram support.
+// There is no delivery guarantee for DATAGRAM frames, they are not retransmitted if lost.
+// The payload of the datagram needs to fit into a single QUIC packet.
+// In addition, a datagram may be dropped before being sent out if the available packet size suddenly decreases.
+// If the payload is too large to be sent at the current time, a DatagramTooLargeError is returned.
+//
+// p is COPIED. The caller keeps ownership of p and may modify or reuse it as soon as this returns,
+// whatever the result. To hand the payload over instead, see SendDatagramOwned.
+func (c *Conn) SendDatagram(p []byte) error {
+	if err := c.validateDatagramSize(len(p)); err != nil {
+		return err
+	}
+	f := &wire.DatagramFrame{DataLenPresent: true}
 	f.Data = make([]byte, len(p))
 	copy(f.Data, p)
+	return c.datagramQueue.Add(f)
+}
+
+// DatagramOwner is the ownership handle for a DATAGRAM payload handed to SendDatagramOwned.
+//
+// Release must be safe to call from the connection's send path and must free the payload exactly
+// once. Implementations must not assume any particular goroutine.
+type DatagramOwner interface {
+	// Release returns the payload to its owner. It is called EXACTLY ONCE, after the transport
+	// has finished reading the payload.
+	Release()
+}
+
+// SendDatagramOwned sends a QUIC datagram while TAKING OWNERSHIP of the payload.
+//
+// # Ownership contract
+//
+// On a nil return, ownership has transferred to the connection:
+//
+//   - the caller MUST NOT modify, read, reuse or release p or owner;
+//   - the connection will call owner.Release() exactly once, after the payload has been copied
+//     into an outgoing QUIC packet (or after the frame has been discarded without being sent).
+//
+// On a non-nil return, NO ownership has transferred:
+//
+//   - the caller still owns p and owner, which are untouched;
+//   - the caller is responsible for releasing them, and may still inspect or modify p.
+//
+// # Why the error case keeps ownership with the caller
+//
+// The caller has to be able to act on the failure using the payload itself. A CONNECT-IP sender
+// that gets DatagramTooLargeError must trim the payload and build an ICMP Packet Too Big from it; a
+// CONNECT-IP sender that gets ErrDatagramUnsupported must fall back to carrying the packet in
+// capsules. Releasing on the error path would make both impossible.
+//
+// # When Release actually happens
+//
+// Release is invoked from the DATAGRAM frame's serialization, immediately after the payload has
+// been appended to the outgoing packet's buffer -- the last point at which the transport reads it.
+// It is deliberately not deferred to an ACK: DATAGRAM frames are not retransmitted (RFC 9221), so
+// there is nothing to wait for, and holding payload buffers until connection close would exhaust
+// the buffer pool under load.
+//
+// The size and support checks run before any ownership is taken, so an oversized or unsupported
+// datagram costs no copy and leaves the payload entirely with the caller.
+func (c *Conn) SendDatagramOwned(p []byte, owner DatagramOwner) error {
+	if err := c.validateDatagramSize(len(p)); err != nil {
+		return err
+	}
+	if owner == nil {
+		return errors.New("datagram owner must not be nil")
+	}
+	f := &wire.DatagramFrame{DataLenPresent: true, Data: p}
+	f.SetRelease(owner.Release)
 	return c.datagramQueue.Add(f)
 }
 

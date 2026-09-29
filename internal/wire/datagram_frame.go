@@ -17,6 +17,36 @@ var MaxDatagramSize protocol.ByteCount = 16383
 type DatagramFrame struct {
 	DataLenPresent bool
 	Data           []byte
+	// release, when non-nil, is the ownership handle for Data. It is invoked EXACTLY ONCE, after
+	// the frame will never be read again -- see Release.
+	//
+	// It is set only for frames enqueued through the owned-datagram API. A frame built by the
+	// copying path leaves it nil and Release is a no-op.
+	release func()
+}
+
+// Release hands back the frame's payload ownership, if it holds any.
+//
+// # Why the handle is cleared before it is invoked
+//
+// A frame can leave the send queue in three ways: it is serialized into a packet, it is discarded
+// because it does not fit, or it is discarded after too many peeks. Exactly one of those happens to
+// any given frame, but the frame is also reachable afterwards -- it is carried in the packet's
+// frame list for qlog and ack-handler bookkeeping. Clearing the handle first makes a second Release
+// a harmless no-op instead of a double free, so a future change that adds another release path
+// cannot turn into memory corruption.
+func (f *DatagramFrame) Release() {
+	if f == nil || f.release == nil {
+		return
+	}
+	release := f.release
+	f.release = nil
+	release()
+}
+
+// SetRelease installs the ownership handle for this frame's payload.
+func (f *DatagramFrame) SetRelease(release func()) {
+	f.release = release
 }
 
 func parseDatagramFrame(b []byte, typ FrameType, _ protocol.Version) (*DatagramFrame, int, error) {
@@ -54,6 +84,18 @@ func (f *DatagramFrame) Append(b []byte, _ protocol.Version) ([]byte, error) {
 		b = quicvarint.Append(b, uint64(len(f.Data)))
 	}
 	b = append(b, f.Data...)
+	// THE release point, and the reason it is here rather than wherever the frame was queued.
+	//
+	// The append above is the LAST read of f.Data on the send path: the bytes are now in the
+	// caller's packet buffer and nothing downstream ever looks at the frame's slice again. The
+	// frame itself outlives this call -- it is carried in the packet's frame list for qlog and
+	// ack-handler bookkeeping -- but its payload does not, so ownership can be handed back now.
+	//
+	// Releasing earlier would be wrong: Pop() only unlinks the frame, and two of its three call
+	// sites discard a frame without ever serializing it. Releasing later would be wrong too:
+	// DATAGRAM frames are not retransmitted (RFC 9221), so there is no ACK to wait for, and a
+	// 32-entry queue holding buffers until connection close is a pool-starvation bug.
+	f.Release()
 	return b, nil
 }
 

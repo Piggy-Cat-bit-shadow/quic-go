@@ -22,8 +22,11 @@ type stateTrackingStream struct {
 	*quic.Stream
 
 	sendDatagram func([]byte) error
-	hasData      chan struct{}
-	queue        [][]byte // TODO: use a ring buffer
+	// sendDatagramOwnedFn is the owned counterpart. It is a separate field rather than an optional
+	// interface on sendDatagram's type so the existing copying path stays exactly as it was.
+	sendDatagramOwnedFn func(OwnedDatagramPayload) error
+	hasData             chan struct{}
+	queue               [][]byte // TODO: use a ring buffer
 
 	mx      sync.Mutex
 	sendErr error
@@ -38,12 +41,13 @@ type streamClearer interface {
 	clearStream(quic.StreamID)
 }
 
-func newStateTrackingStream(s *quic.Stream, clearer streamClearer, sendDatagram func([]byte) error) *stateTrackingStream {
+func newStateTrackingStream(s *quic.Stream, clearer streamClearer, sendDatagram func([]byte) error, sendDatagramOwnedFn func(OwnedDatagramPayload) error) *stateTrackingStream {
 	t := &stateTrackingStream{
-		Stream:       s,
-		clearer:      clearer,
-		sendDatagram: sendDatagram,
-		hasData:      make(chan struct{}, 1),
+		Stream:              s,
+		clearer:             clearer,
+		sendDatagram:        sendDatagram,
+		sendDatagramOwnedFn: sendDatagramOwnedFn,
+		hasData:             make(chan struct{}, 1),
 	}
 
 	context.AfterFunc(s.Context(), func() {
@@ -122,6 +126,22 @@ func (s *stateTrackingStream) SendDatagram(b []byte) error {
 	}
 
 	return s.sendDatagram(b)
+}
+
+// sendDatagramOwned is the ownership-transferring counterpart of SendDatagram.
+//
+// The stream-error check comes FIRST, before any prefix is written, so a stream that has already
+// failed returns without touching the caller's buffer. The caller then still owns a buffer in the
+// exact layout it handed over.
+func (s *stateTrackingStream) sendDatagramOwned(payload OwnedDatagramPayload) error {
+	s.mx.Lock()
+	sendErr := s.sendErr
+	s.mx.Unlock()
+	if sendErr != nil {
+		return sendErr
+	}
+
+	return s.sendDatagramOwnedFn(payload)
 }
 
 func (s *stateTrackingStream) signalHasDatagram() {

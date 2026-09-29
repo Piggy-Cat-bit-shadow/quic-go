@@ -25,6 +25,11 @@ type datagramStream interface {
 	SetReadDeadline(time.Time) error
 	SetWriteDeadline(time.Time) error
 	SendDatagram(b []byte) error
+	// sendDatagramOwned is the ownership-transferring send. It lives on this interface because
+	// stateTrackingStream is the only implementation in this package and it already has the
+	// plumbing; the public surface stays optional (see Stream.SendDatagramOwned), so external
+	// implementers of datagramStream are unaffected.
+	sendDatagramOwned(payload OwnedDatagramPayload) error
 	ReceiveDatagram(ctx context.Context) ([]byte, error)
 
 	QUICStream() *quic.Stream
@@ -140,6 +145,17 @@ func (s *Stream) writeUnframed(b []byte) (int, error) {
 
 func (s *Stream) StreamID() quic.StreamID {
 	return s.datagramStream.StreamID()
+}
+
+// SendDatagramOwned sends an HTTP Datagram while taking ownership of the payload, prepending the
+// quarter stream ID in place instead of copying the payload into a new buffer.
+//
+// The ownership contract is the one documented on quic.Conn.SendDatagramOwned: on a nil return the
+// transport owns the payload and will release it exactly once; on error the caller still owns it,
+// with its bytes exactly as they were passed in.
+func (s *Stream) SendDatagramOwned(payload OwnedDatagramPayload) error {
+	// TODO: reject if datagrams are not negotiated (yet)
+	return s.datagramStream.sendDatagramOwned(payload)
 }
 
 func (s *Stream) SendDatagram(b []byte) error {
@@ -269,6 +285,29 @@ func (s *RequestStream) SetDeadline(t time.Time) error {
 // as the server might drop datagrams which it can't associate with an existing request.
 func (s *RequestStream) SendDatagram(b []byte) error {
 	return s.str.SendDatagram(b)
+}
+
+// SendDatagramOwned sends an HTTP Datagram (RFC 9297) while TAKING OWNERSHIP of the payload.
+//
+// It is the zero-copy counterpart of SendDatagram: instead of allocating a new buffer and copying
+// both the quarter stream ID and the payload into it, the quarter stream ID is written into
+// headroom the payload already has.
+//
+// # Ownership contract
+//
+// On a nil return, ownership has transferred to the transport, which will call payload.Release()
+// exactly once after the bytes are in an outgoing packet. The caller must not read, modify, reuse or
+// release the payload afterwards.
+//
+// On a non-nil return, the caller still owns the payload, and its bytes are EXACTLY as they were
+// passed in: any quarter stream ID written in the meantime has been rolled back. That matters
+// because callers act on these errors using the payload -- trimming it for an ICMP Packet Too Big,
+// or handing it to a capsule fallback.
+//
+// If the payload has no headroom for the quarter stream ID, this transparently takes the copying
+// path rather than failing, so a caller cannot lose datagrams because of a buffer's layout.
+func (s *RequestStream) SendDatagramOwned(payload OwnedDatagramPayload) error {
+	return s.str.SendDatagramOwned(payload)
 }
 
 // ReceiveDatagram receives HTTP Datagrams (RFC 9297).

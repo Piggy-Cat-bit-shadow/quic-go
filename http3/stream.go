@@ -328,6 +328,18 @@ func (s *RequestStream) SendDatagramOwned(payload OwnedDatagramPayload) error {
 	return s.str.SendDatagramOwned(payload)
 }
 
+// SendDatagramsOwned sends several HTTP Datagrams while TAKING OWNERSHIP of every payload.
+//
+// It is the batched counterpart of SendDatagramOwned: one call for a burst, so the send-queue lock
+// and the send scheduling signal are charged once per batch rather than once per datagram.
+//
+// Ownership is all-or-nothing, as documented on quic.Conn.SendDatagramsOwned. A nil return means
+// the transport owns every payload; a non-nil return means the caller still owns all of them, with
+// their bytes exactly as passed in, so the batch can be retried or carried in capsules instead.
+func (s *RequestStream) SendDatagramsOwned(payloads []OwnedDatagramPayload) error {
+	return s.str.SendDatagramsOwned(payloads)
+}
+
 // ReceiveDatagram receives HTTP Datagrams (RFC 9297).
 //
 // It is only possible if support for HTTP Datagrams was enabled, using the EnableDatagram

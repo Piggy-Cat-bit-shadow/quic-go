@@ -70,7 +70,7 @@ func TestOwnedDatagramReleasesAfterSerialization(t *testing.T) {
 	want := append([]byte{0x31, byte(len(payload))}, payload...)
 	owner := &countingOwner{payload: payload, poison: 0xAA}
 	frame := &wire.DatagramFrame{DataLenPresent: true, Data: payload}
-	frame.SetRelease(owner.Release)
+	frame.SetOwner(owner)
 
 	if owner.releaseCount() != 0 {
 		t.Fatal("release ran before the frame was serialized")
@@ -112,7 +112,7 @@ func TestOwnedDatagramReleasesAfterSerialization(t *testing.T) {
 func TestOwnedDatagramReleaseIsIdempotent(t *testing.T) {
 	owner := &countingOwner{payload: make([]byte, 8)}
 	frame := &wire.DatagramFrame{DataLenPresent: true, Data: owner.payload}
-	frame.SetRelease(owner.Release)
+	frame.SetOwner(owner)
 
 	frame.Release()
 	frame.Release()
@@ -162,7 +162,7 @@ func TestQueueCloseReleasesEveryQueuedFrame(t *testing.T) {
 		owner := &countingOwner{payload: make([]byte, 64)}
 		owners = append(owners, owner)
 		frame := &wire.DatagramFrame{DataLenPresent: true, Data: owner.payload}
-		frame.SetRelease(owner.Release)
+		frame.SetOwner(owner)
 		if err := queue.Add(frame); err != nil {
 			t.Fatal(err)
 		}
@@ -212,7 +212,7 @@ func TestQueueAddAfterCloseAlwaysRejects(t *testing.T) {
 
 	owner := &countingOwner{payload: []byte("must be rejected")}
 	frame := &wire.DatagramFrame{DataLenPresent: true, Data: owner.payload}
-	frame.SetRelease(owner.Release)
+	frame.SetOwner(owner)
 
 	if err := queue.Add(frame); err == nil {
 		t.Fatal("a closed queue must reject even when it has room")
@@ -238,7 +238,7 @@ func TestQueueAddBlockedOnClosedQueueRejects(t *testing.T) {
 
 	owner := &countingOwner{payload: []byte("caller keeps this")}
 	frame := &wire.DatagramFrame{DataLenPresent: true, Data: owner.payload}
-	frame.SetRelease(owner.Release)
+	frame.SetOwner(owner)
 
 	blocked := make(chan error, 1)
 	go func() { blocked <- queue.Add(frame) }()
@@ -267,7 +267,7 @@ func TestDiscardFrontReleasesWithoutSerializing(t *testing.T) {
 	queue := newDatagramQueue(func() {}, nil)
 	owner := &countingOwner{payload: make([]byte, 32)}
 	frame := &wire.DatagramFrame{DataLenPresent: true, Data: owner.payload}
-	frame.SetRelease(owner.Release)
+	frame.SetOwner(owner)
 	if err := queue.Add(frame); err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestPopDoesNotRelease(t *testing.T) {
 	queue := newDatagramQueue(func() {}, nil)
 	owner := &countingOwner{payload: []byte("still needed")}
 	frame := &wire.DatagramFrame{DataLenPresent: true, Data: owner.payload}
-	frame.SetRelease(owner.Release)
+	frame.SetOwner(owner)
 	if err := queue.Add(frame); err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +335,7 @@ func TestQueueFullThenCloseLeavesNoOwnerStranded(t *testing.T) {
 		owner := &countingOwner{payload: make([]byte, 8)}
 		accepted = append(accepted, owner)
 		frame := &wire.DatagramFrame{DataLenPresent: true, Data: owner.payload}
-		frame.SetRelease(owner.Release)
+		frame.SetOwner(owner)
 		if err := queue.Add(frame); err != nil {
 			t.Fatal(err)
 		}
@@ -344,7 +344,7 @@ func TestQueueFullThenCloseLeavesNoOwnerStranded(t *testing.T) {
 	// This one blocks: the queue is at its limit.
 	rejected := &countingOwner{payload: make([]byte, 8)}
 	rejectedFrame := &wire.DatagramFrame{DataLenPresent: true, Data: rejected.payload}
-	rejectedFrame.SetRelease(rejected.Release)
+	rejectedFrame.SetOwner(rejected)
 	blocked := make(chan error, 1)
 	go func() { blocked <- queue.Add(rejectedFrame) }()
 

@@ -3150,7 +3150,11 @@ func (c *Conn) SendDatagramOwned(p []byte, owner DatagramOwner) error {
 		return errors.New("datagram owner must not be nil")
 	}
 	f := &wire.DatagramFrame{DataLenPresent: true, Data: p}
-	f.SetRelease(owner.Release)
+	// The owner is stored DIRECTLY rather than as a bound method value. Taking owner.Release on an
+	// interface receiver boxes it into a heap closure -- escape analysis reports
+	// "owner.Release escapes to heap" -- which is a 16-byte allocation per datagram. Storing the
+	// interface costs two words inside the frame the queue already holds.
+	f.SetOwner(owner)
 	return c.datagramQueue.Add(f)
 }
 

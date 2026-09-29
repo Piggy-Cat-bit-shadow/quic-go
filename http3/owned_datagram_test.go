@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/sagernet/quic-go"
 	"github.com/sagernet/quic-go/quicvarint"
 )
 
@@ -231,5 +232,188 @@ func TestSendDatagramOwnedFallsBackWithoutHeadroom(t *testing.T) {
 	// caller passed in, i.e. no prefix was written.
 	if string(owner.Bytes()) != "no room" {
 		t.Fatalf("fallback payload was modified: %q", owner.Bytes())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Batched owned send: rollback and atomicity
+// ---------------------------------------------------------------------------
+
+// TestSendDatagramsOwnedRejectsWholeBatchOnStreamError proves the stream-error check applies to the
+// batch as a whole, so a failed stream touches no caller buffer at all.
+func TestSendDatagramsOwnedRejectsWholeBatchOnStreamError(t *testing.T) {
+	streamErr := errors.New("stream is closed")
+	stream := &stateTrackingStream{sendErr: streamErr}
+	stream.sendDatagramsOwnedFn = func([]OwnedDatagramPayload) error {
+		t.Fatal("the transport must not be reached once the stream has failed")
+		return nil
+	}
+
+	payloads := [][]byte{[]byte("first"), []byte("second"), []byte("third")}
+	owners := make([]*testOwningPayload, len(payloads))
+	batch := make([]OwnedDatagramPayload, len(payloads))
+	for i, p := range payloads {
+		owners[i] = newTestOwningPayload(p, 8)
+		batch[i] = owners[i]
+	}
+
+	err := stream.sendDatagramsOwned(batch)
+	if !errors.Is(err, streamErr) {
+		t.Fatalf("expected the stream error, got %v", err)
+	}
+	for i, owner := range owners {
+		if string(owner.Bytes()) != string(payloads[i]) {
+			t.Fatalf("payload %d modified by a failed batch: %q", i, owner.Bytes())
+		}
+		if owner.releases != 0 {
+			t.Fatalf("payload %d released by a failed batch", i)
+		}
+	}
+}
+
+// TestSendDatagramsOwnedEmptyIsNoOp keeps the degenerate call from reaching the transport.
+func TestSendDatagramsOwnedEmptyIsNoOp(t *testing.T) {
+	stream := &stateTrackingStream{}
+	stream.sendDatagramsOwnedFn = func([]OwnedDatagramPayload) error {
+		t.Fatal("an empty batch must not reach the transport")
+		return nil
+	}
+	if err := stream.sendDatagramsOwned(nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSendDatagramsOwnedPassesWholeBatchThrough proves the batch is forwarded intact and in order,
+// so the ORDER of datagrams on the wire matches the order the caller handed them over.
+func TestSendDatagramsOwnedPassesWholeBatchThrough(t *testing.T) {
+	var got []string
+	stream := &stateTrackingStream{}
+	stream.sendDatagramsOwnedFn = func(payloads []OwnedDatagramPayload) error {
+		for _, p := range payloads {
+			got = append(got, string(p.Bytes()))
+		}
+		return nil
+	}
+	want := []string{"a", "b", "c", "d"}
+	batch := make([]OwnedDatagramPayload, len(want))
+	for i, w := range want {
+		batch[i] = newTestOwningPayload([]byte(w), 8)
+	}
+	if err := stream.sendDatagramsOwned(batch); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d payloads, got %d", len(want), len(got))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("payload %d out of order: got %q want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestStreamSendDatagramsOwnedIsWiredToTheTransport guards the plumbing: if Stream.SendDatagramsOwned
+// stopped reaching the datagram stream, every batch would be silently dropped.
+func TestStreamSendDatagramsOwnedIsWiredToTheTransport(t *testing.T) {
+	called := false
+	stream := &stateTrackingStream{}
+	stream.sendDatagramsOwnedFn = func([]OwnedDatagramPayload) error {
+		called = true
+		return nil
+	}
+	s := &Stream{datagramStream: stream}
+	if err := s.SendDatagramsOwned([]OwnedDatagramPayload{newTestOwningPayload([]byte("x"), 8)}); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("Stream.SendDatagramsOwned did not reach the datagram stream")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Batch prefix and rollback helpers
+// ---------------------------------------------------------------------------
+
+// TestClearPrefixesRestoresEveryPayload is the rollback that makes a failed batch usable.
+//
+// If only part of the batch were rolled back, the rest would keep a quarter stream ID glued to the
+// front. The caller -- having been told the batch failed -- would legitimately reuse those buffers,
+// and would transmit a packet with an HTTP/3 varint prepended to it. Nothing would report an error:
+// the bytes would simply be wrong on the wire.
+func TestClearPrefixesRestoresEveryPayload(t *testing.T) {
+	const streamID = quic.StreamID(4 * 12345) // multi-byte quarter stream ID
+	n := quicvarint.Len(uint64(streamID / 4))
+
+	originals := []string{"first", "second", "third", "fourth"}
+	payloads := make([]OwnedDatagramPayload, len(originals))
+	for i, o := range originals {
+		payloads[i] = newTestOwningPayload([]byte(o), 8)
+	}
+
+	prefixPayloads(payloads, streamID)
+	// Each payload must now start with the varint.
+	for i, p := range payloads {
+		got := p.Bytes()
+		if len(got) <= len(originals[i]) {
+			t.Fatalf("payload %d was not prefixed", i)
+		}
+		if string(got[n:]) != originals[i] {
+			t.Fatalf("payload %d: prefix corrupted the payload: %q", i, got)
+		}
+	}
+
+	clearPrefixes(payloads, n)
+
+	for i, p := range payloads {
+		if got := string(p.Bytes()); got != originals[i] {
+			t.Fatalf("payload %d was not fully restored: got %q want %q", i, got, originals[i])
+		}
+	}
+}
+
+// TestAllPayloadsHaveHeadroomLeavesPayloadsUntouched proves the probe pass is side-effect free.
+//
+// The check runs BEFORE the decision, so a batch that will take the copying route must reach it
+// with every buffer exactly as the caller passed it in.
+func TestAllPayloadsHaveHeadroomLeavesPayloadsUntouched(t *testing.T) {
+	originals := []string{"aaa", "bbb", "ccc"}
+	payloads := make([]OwnedDatagramPayload, len(originals))
+	for i, o := range originals {
+		payloads[i] = newTestOwningPayload([]byte(o), 8)
+	}
+	if !allPayloadsHaveHeadroom(payloads, 4) {
+		t.Fatal("8 bytes of headroom must accept a 4-byte prefix")
+	}
+	for i, p := range payloads {
+		if got := string(p.Bytes()); got != originals[i] {
+			t.Fatalf("payload %d changed by the headroom probe: got %q want %q", i, got, originals[i])
+		}
+	}
+}
+
+// TestAllPayloadsHaveHeadroomIsAllOrNothing proves ONE payload without room rejects the whole batch,
+// and that the rejection still leaves every already-probed payload untouched.
+func TestAllPayloadsHaveHeadroomIsAllOrNothing(t *testing.T) {
+	originals := []string{"has room", "no room"}
+	payloads := []OwnedDatagramPayload{
+		newTestOwningPayload([]byte(originals[0]), 8),
+		newTestOwningPayload([]byte(originals[1]), 0), // no headroom
+	}
+	if allPayloadsHaveHeadroom(payloads, 4) {
+		t.Fatal("a batch containing a payload without room must be rejected as a whole")
+	}
+	for i, p := range payloads {
+		if got := string(p.Bytes()); got != originals[i] {
+			t.Fatalf("payload %d changed by a failed probe: got %q want %q", i, got, originals[i])
+		}
+	}
+}
+
+// TestClearPrefixesZeroIsNoOp keeps the fallback route from shifting payloads it never prefixed.
+func TestClearPrefixesZeroIsNoOp(t *testing.T) {
+	p := newTestOwningPayload([]byte("untouched"), 8)
+	clearPrefixes([]OwnedDatagramPayload{p}, 0)
+	if got := string(p.Bytes()); got != "untouched" {
+		t.Fatalf("a zero-length rollback must not move the payload, got %q", got)
 	}
 }

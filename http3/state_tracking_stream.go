@@ -25,8 +25,10 @@ type stateTrackingStream struct {
 	// sendDatagramOwnedFn is the owned counterpart. It is a separate field rather than an optional
 	// interface on sendDatagram's type so the existing copying path stays exactly as it was.
 	sendDatagramOwnedFn func(OwnedDatagramPayload) error
-	hasData             chan struct{}
-	queue               [][]byte // TODO: use a ring buffer
+	// sendDatagramsOwnedFn is the batched owned send, a separate field for the same reason.
+	sendDatagramsOwnedFn func([]OwnedDatagramPayload) error
+	hasData              chan struct{}
+	queue                [][]byte // TODO: use a ring buffer
 
 	mx      sync.Mutex
 	sendErr error
@@ -41,13 +43,14 @@ type streamClearer interface {
 	clearStream(quic.StreamID)
 }
 
-func newStateTrackingStream(s *quic.Stream, clearer streamClearer, sendDatagram func([]byte) error, sendDatagramOwnedFn func(OwnedDatagramPayload) error) *stateTrackingStream {
+func newStateTrackingStream(s *quic.Stream, clearer streamClearer, sendDatagram func([]byte) error, sendDatagramOwnedFn func(OwnedDatagramPayload) error, sendDatagramsOwnedFn func([]OwnedDatagramPayload) error) *stateTrackingStream {
 	t := &stateTrackingStream{
-		Stream:              s,
-		clearer:             clearer,
-		sendDatagram:        sendDatagram,
-		sendDatagramOwnedFn: sendDatagramOwnedFn,
-		hasData:             make(chan struct{}, 1),
+		Stream:               s,
+		clearer:              clearer,
+		sendDatagram:         sendDatagram,
+		sendDatagramOwnedFn:  sendDatagramOwnedFn,
+		sendDatagramsOwnedFn: sendDatagramsOwnedFn,
+		hasData:              make(chan struct{}, 1),
 	}
 
 	context.AfterFunc(s.Context(), func() {
@@ -142,6 +145,23 @@ func (s *stateTrackingStream) sendDatagramOwned(payload OwnedDatagramPayload) er
 	}
 
 	return s.sendDatagramOwnedFn(payload)
+}
+
+// sendDatagramsOwned is the batched counterpart. The stream-error check runs first and applies to
+// the WHOLE batch, so a failed stream returns without touching any caller buffer -- which is what
+// makes the batch all-or-nothing at this layer too.
+func (s *stateTrackingStream) sendDatagramsOwned(payloads []OwnedDatagramPayload) error {
+	if len(payloads) == 0 {
+		return nil
+	}
+	s.mx.Lock()
+	sendErr := s.sendErr
+	s.mx.Unlock()
+	if sendErr != nil {
+		return sendErr
+	}
+
+	return s.sendDatagramsOwnedFn(payloads)
 }
 
 func (s *stateTrackingStream) signalHasDatagram() {

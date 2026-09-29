@@ -30,6 +30,10 @@ type datagramStream interface {
 	// plumbing; the public surface stays optional (see Stream.SendDatagramOwned), so external
 	// implementers of datagramStream are unaffected.
 	sendDatagramOwned(payload OwnedDatagramPayload) error
+	// sendDatagramsOwned is the batched owned send. It is on the interface for the same reason as
+	// sendDatagramOwned: stateTrackingStream is the only implementation and already has the
+	// plumbing, while the public surface stays optional.
+	sendDatagramsOwned(payloads []OwnedDatagramPayload) error
 	ReceiveDatagram(ctx context.Context) ([]byte, error)
 
 	QUICStream() *quic.Stream
@@ -156,6 +160,20 @@ func (s *Stream) StreamID() quic.StreamID {
 func (s *Stream) SendDatagramOwned(payload OwnedDatagramPayload) error {
 	// TODO: reject if datagrams are not negotiated (yet)
 	return s.datagramStream.sendDatagramOwned(payload)
+}
+
+// SendDatagramsOwned sends several HTTP Datagrams while taking ownership of every payload.
+//
+// Ownership is all-or-nothing, as documented on quic.Conn.SendDatagramsOwned: a nil return means
+// the transport owns every payload and will release each exactly once; a non-nil return means the
+// caller still owns all of them, with their bytes exactly as they were passed in.
+//
+// This exists so a burst can be handed over in one call. The per-datagram cost it removes is the
+// send-queue lock and the send scheduling signal, which are charged once per batch instead of once
+// per datagram.
+func (s *Stream) SendDatagramsOwned(payloads []OwnedDatagramPayload) error {
+	// TODO: reject if datagrams are not negotiated (yet)
+	return s.datagramStream.sendDatagramsOwned(payloads)
 }
 
 func (s *Stream) SendDatagram(b []byte) error {

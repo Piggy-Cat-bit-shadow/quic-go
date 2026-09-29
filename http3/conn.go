@@ -116,7 +116,8 @@ func (c *rawConn) openControlStream(settings *settingsFrame) (*quic.SendStream, 
 func (c *rawConn) TrackStream(str *quic.Stream) *stateTrackingStream {
 	hstr := newStateTrackingStream(str, c,
 		func(b []byte) error { return c.sendDatagram(str.StreamID(), b) },
-		func(payload OwnedDatagramPayload) error { return c.sendDatagramOwned(str.StreamID(), payload) })
+		func(payload OwnedDatagramPayload) error { return c.sendDatagramOwned(str.StreamID(), payload) },
+		func(payloads []OwnedDatagramPayload) error { return c.sendDatagramsOwned(str.StreamID(), payloads) })
 
 	c.streamMx.Lock()
 	c.streams[str.StreamID()] = hstr
@@ -338,6 +339,113 @@ func (c *rawConn) sendDatagramOwned(streamID quic.StreamID, payload OwnedDatagra
 		payload.Advance(prefixLen)
 	}
 	return err
+}
+
+// sendDatagramsOwned is the batched counterpart of sendDatagramOwned.
+//
+// # Why the prefixing cannot be interleaved with the sending
+//
+// The batch is all-or-nothing, and the quarter stream ID is written INTO each payload before it is
+// handed over. If payloads were prefixed and sent one at a time, a failure part-way through would
+// leave the already-sent payloads owned by the transport and the rest carrying a prefix the caller
+// never asked for -- and the caller, having been told the batch failed, would legitimately reuse
+// those buffers and put a stray quarter stream ID on the wire.
+//
+// So every payload is prefixed first, and if ANY single send fails the prefix is rolled back off
+// every payload in the batch, restoring exactly the bytes the caller passed in.
+//
+// # "All-or-nothing" describes ownership, not transmission
+//
+// A batch that fails on its third payload has already queued the first two, and those are sent.
+// That is unavoidable and correct: DATAGRAM delivery is best-effort by definition (RFC 9221). What
+// the caller is guaranteed is that a non-nil return means it owns all of its buffers again, in the
+// state it passed them, so it can retry or fall back to capsules without double-releasing.
+func (c *rawConn) sendDatagramsOwned(streamID quic.StreamID, payloads []OwnedDatagramPayload) error {
+	if len(payloads) == 0 {
+		return nil
+	}
+	prefixLen := quicvarint.Len(uint64(streamID / 4))
+
+	// A payload that cannot take the prefix makes the WHOLE batch take the copying route, so a batch
+	// is never split across two ownership models.
+	if !allPayloadsHaveHeadroom(payloads, prefixLen) {
+		for _, p := range payloads {
+			if err := c.sendDatagram(streamID, p.Bytes()); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	prefixPayloads(payloads, streamID)
+
+	if c.qlogger != nil {
+		for _, payload := range payloads {
+			c.qlogger.RecordEvent(qlog.DatagramCreated{
+				QuarterStreamID: uint64(streamID / 4),
+				Raw: qlog.RawInfo{
+					Length:        len(payload.Bytes()),
+					PayloadLength: len(payload.Bytes()) - prefixLen,
+				},
+			})
+		}
+	}
+
+	raw := make([][]byte, len(payloads))
+	owners := make([]quic.DatagramOwner, len(payloads))
+	for i, payload := range payloads {
+		raw[i] = payload.Bytes()
+		owners[i] = payload
+	}
+	err := c.conn.SendDatagramsOwned(raw, owners)
+	if err != nil {
+		// Roll the prefix back off EVERY payload, so the whole batch is the caller's again.
+		clearPrefixes(payloads, prefixLen)
+	}
+	return err
+}
+
+// allPayloadsHaveHeadroom reports whether EVERY payload can take an n-byte prefix.
+//
+// It leaves the payloads exactly as it found them. Prepend is the only way to ask the question, so
+// it is called and then immediately undone. A batch that will take the copying route must reach
+// that route with every buffer byte-identical to what the caller passed in, which is why this is a
+// separate pass rather than being folded into the prefixing loop.
+func allPayloadsHaveHeadroom(payloads []OwnedDatagramPayload, n int) bool {
+	for _, payload := range payloads {
+		if payload.Prepend(n) == nil {
+			// Everything examined so far has been undone; nothing to restore.
+			return false
+		}
+		payload.Advance(n)
+	}
+	return true
+}
+
+// prefixPayloads writes the quarter stream ID in front of every payload.
+func prefixPayloads(payloads []OwnedDatagramPayload, streamID quic.StreamID) {
+	n := quicvarint.Len(uint64(streamID / 4))
+	for _, payload := range payloads {
+		header := payload.Prepend(n)
+		if header == nil {
+			// Unreachable behind allPayloadsHaveHeadroom, but a nil slice must never be written to.
+			continue
+		}
+		_ = quicvarint.Append(header[:0], uint64(streamID/4))
+	}
+}
+
+// clearPrefixes removes an n-byte prefix from every payload.
+//
+// This rollback is what makes a failed batch usable: the caller gets all of its buffers back in
+// exactly the layout it handed over, so it can retry, trim for a PTB, or fall back to capsules.
+func clearPrefixes(payloads []OwnedDatagramPayload, n int) {
+	if n == 0 {
+		return
+	}
+	for _, payload := range payloads {
+		payload.Advance(n)
+	}
 }
 
 func (c *rawConn) receiveDatagrams() error {

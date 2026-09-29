@@ -13,16 +13,37 @@ import (
 // This is a var and not a const so it can be set in tests.
 var MaxDatagramSize protocol.ByteCount = 16383
 
+// DatagramOwner is the ownership handle for a DATAGRAM payload whose bytes are borrowed.
+//
+// It is declared here rather than in the top-level package so that a frame can hold one without
+// the internal/wire package depending on the QUIC connection.
+type DatagramOwner interface {
+	// Release is called EXACTLY ONCE, after the last read of the payload.
+	Release()
+}
+
 // A DatagramFrame is a DATAGRAM frame
 type DatagramFrame struct {
 	DataLenPresent bool
 	Data           []byte
-	// release, when non-nil, is the ownership handle for Data. It is invoked EXACTLY ONCE, after
-	// the frame will never be read again -- see Release.
+	// owner, when non-nil, is the ownership handle for Data. It is invoked EXACTLY ONCE, after the
+	// frame will never be read again -- see Release.
 	//
 	// It is set only for frames enqueued through the owned-datagram API. A frame built by the
 	// copying path leaves it nil and Release is a no-op.
-	release func()
+	//
+	// # Why an interface rather than a func()
+	//
+	// A `func()` field has to be filled with a METHOD VALUE such as `owner.Release`. Taking a
+	// method value on an interface-typed receiver boxes the receiver and its type, which the
+	// compiler allocates on the heap: escape analysis reports
+	// "owner.Release escapes to heap ... storage for owner.Release". That is one 16-byte allocation
+	// per datagram, on the path whose entire purpose is to avoid per-packet work.
+	//
+	// Storing the owner directly costs nothing extra: an interface value is two words and lives in
+	// the frame the queue already keeps alive, so the per-datagram allocation disappears and the
+	// Release call becomes one interface dispatch on the failure-free path.
+	owner DatagramOwner
 }
 
 // Release hands back the frame's payload ownership, if it holds any.
@@ -36,17 +57,18 @@ type DatagramFrame struct {
 // a harmless no-op instead of a double free, so a future change that adds another release path
 // cannot turn into memory corruption.
 func (f *DatagramFrame) Release() {
-	if f == nil || f.release == nil {
+	if f == nil || f.owner == nil {
 		return
 	}
-	release := f.release
-	f.release = nil
-	release()
+	owner := f.owner
+	// Cleared before the call, so a re-entrant or duplicate Release cannot double-free.
+	f.owner = nil
+	owner.Release()
 }
 
-// SetRelease installs the ownership handle for this frame's payload.
-func (f *DatagramFrame) SetRelease(release func()) {
-	f.release = release
+// SetOwner installs the ownership handle for this frame's payload.
+func (f *DatagramFrame) SetOwner(owner DatagramOwner) {
+	f.owner = owner
 }
 
 func parseDatagramFrame(b []byte, typ FrameType, _ protocol.Version) (*DatagramFrame, int, error) {

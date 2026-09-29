@@ -3158,6 +3158,55 @@ func (c *Conn) SendDatagramOwned(p []byte, owner DatagramOwner) error {
 	return c.datagramQueue.Add(f)
 }
 
+// SendDatagramsOwned sends several DATAGRAM messages as one batch, taking ownership of every
+// payload.
+//
+// # Ownership contract
+//
+// On a nil return, ownership of EVERY payload in the batch has transferred to the connection, and
+// each owner's Release will be called exactly once after its payload has been copied into an
+// outgoing packet (or after its frame is discarded without being sent).
+//
+// On a non-nil return, ownership of NO payload has transferred: the caller still owns every one of
+// them and must release them itself. This is all-or-nothing on purpose. A partial transfer would
+// leave the caller unable to tell which buffers it may reuse, so releasing the batch would
+// double-free the accepted ones and keeping it would leak the rejected ones.
+//
+// The whole batch is validated before anything is queued, so a single oversized or ownerless entry
+// rejects the batch without any frame having been queued and without any ownership moving.
+//
+// # Why batch at all
+//
+// The sender is bursty by construction: sing-tun's dispatch stage collects a whole read burst and
+// hands it over in one call. Queuing those frames individually repeats the queue lock and the send
+// scheduling signal once per packet; batching charges them once for the whole group. Callers with a
+// single datagram should keep using SendDatagramOwned, which is the same path with no grouping.
+func (c *Conn) SendDatagramsOwned(payloads [][]byte, owners []DatagramOwner) error {
+	if len(payloads) != len(owners) {
+		return errors.New("datagram batch payload and owner counts differ")
+	}
+	if len(payloads) == 0 {
+		return nil
+	}
+	// Validate everything BEFORE allocating or queueing, so a bad batch costs nothing and leaves
+	// the caller's ownership completely untouched.
+	for i, p := range payloads {
+		if err := c.validateDatagramSize(len(p)); err != nil {
+			return err
+		}
+		if owners[i] == nil {
+			return errors.New("datagram owner must not be nil")
+		}
+	}
+	frames := make([]*wire.DatagramFrame, len(payloads))
+	for i, p := range payloads {
+		f := &wire.DatagramFrame{DataLenPresent: true, Data: p}
+		f.SetOwner(owners[i])
+		frames[i] = f
+	}
+	return c.datagramQueue.AddBatch(frames)
+}
+
 // ReceiveDatagram gets a message received in a QUIC datagram, as specified in RFC 9221.
 func (c *Conn) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	if !c.config.EnableDatagrams {

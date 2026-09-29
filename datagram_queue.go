@@ -2,6 +2,7 @@ package quic
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/sagernet/quic-go/internal/utils"
@@ -65,6 +66,72 @@ func (h *datagramQueue) Add(f *wire.DatagramFrame) error {
 		if h.sendQueue.Len() < maxDatagramSendQueueLen {
 			h.sendQueue.PushBack(f)
 			h.sendMx.Unlock()
+			h.hasData()
+			return nil
+		}
+		select {
+		case <-h.sent: // drain the queue so we don't loop immediately
+		default:
+		}
+		h.sendMx.Unlock()
+		select {
+		case <-h.closed:
+			return h.closeErr
+		case <-h.sent:
+		}
+		h.sendMx.Lock()
+	}
+}
+
+// AddBatch queues several DATAGRAM frames as one unit.
+//
+// # Ownership is all-or-nothing
+//
+// Either every frame is queued (nil return, and the queue now owns every payload), or NONE is and
+// the caller still owns all of them. A partial acceptance would be the worst possible outcome: the
+// caller cannot tell which frames it still owns, so it would either leak the accepted ones or
+// double-release them. Add therefore never queues a prefix and then fails.
+//
+// # Why it does not simply call Add in a loop
+//
+// The point of this method is to amortise the per-packet fixed cost across the batch: one
+// acquisition of sendMx, one placement, and ONE scheduling signal, instead of one of each per
+// packet. Batching is what the sender actually produces -- sing-tun's dispatch stage flushes a
+// whole burst at once, so writePackets routinely receives several packets -- and the per-packet
+// signal was pure repetition, since one wakeup already makes the connection drain the whole queue.
+//
+// # Blocking
+//
+// If the batch does not fit, the queue is drained of what is already in it and then waits for room,
+// exactly like Add. A batch larger than maxDatagramSendQueueLen can therefore never fit and would
+// block forever, so it is rejected up front rather than waiting for space that can never appear.
+func (h *datagramQueue) AddBatch(frames []*wire.DatagramFrame) error {
+	if len(frames) == 0 {
+		return nil
+	}
+	// A batch can never be accepted if it exceeds the queue's own capacity, so failing fast here
+	// avoids a wait for room that no drain can ever free.
+	if len(frames) > maxDatagramSendQueueLen {
+		return fmt.Errorf("datagram batch of %d exceeds the send queue capacity of %d", len(frames), maxDatagramSendQueueLen)
+	}
+
+	h.sendMx.Lock()
+
+	for {
+		// Same ordering as Add: the closed flag is checked under the same lock that the drain
+		// takes, so a woken caller cannot claim the space the drain just freed.
+		if h.sendClosed {
+			h.sendMx.Unlock()
+			return h.closeErr
+		}
+		// All-or-nothing: the batch goes in only if the WHOLE batch fits.
+		if h.sendQueue.Len()+len(frames) <= maxDatagramSendQueueLen {
+			for _, f := range frames {
+				h.sendQueue.PushBack(f)
+			}
+			h.sendMx.Unlock()
+			// One signal for the whole batch. The send loop drains the queue until it is empty, so
+			// a second signal would only set a flag that is already set.
 			h.hasData()
 			return nil
 		}

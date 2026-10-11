@@ -943,6 +943,9 @@ func (c *Conn) switchToNewPath(tr *Transport, now monotime.Time) {
 	if c.peerParams.MaxUDPPayloadSize > 0 && c.peerParams.MaxUDPPayloadSize < maxPacketSize {
 		maxPacketSize = c.peerParams.MaxUDPPayloadSize
 	}
+	// The path may have changed, but the ceiling is a fact about the tunnel the
+	// connection is carried over, not about the peer's willingness to receive.
+	maxPacketSize = c.config.maxGrowablePacketSize(maxPacketSize)
 	c.mtuDiscoverer.Reset(now, initialPacketSize, maxPacketSize)
 	c.conn = newSendConn(tr.conn, c.conn.RemoteAddr(), packetInfo{}, utils.DefaultLogger) // TODO: find a better way
 	c.sendQueue.Close()
@@ -1328,6 +1331,8 @@ func (c *Conn) handleShortHeaderPacket(
 	if c.peerParams.MaxUDPPayloadSize > 0 && c.peerParams.MaxUDPPayloadSize < maxPacketSize {
 		maxPacketSize = c.peerParams.MaxUDPPayloadSize
 	}
+	// A migration is a new path for the peer, not new capacity for the tunnel.
+	maxPacketSize = c.config.maxGrowablePacketSize(maxPacketSize)
 	c.mtuDiscoverer.Reset(
 		p.rcvTime,
 		protocol.ByteCount(c.config.InitialPacketSize),
@@ -2474,6 +2479,10 @@ func (c *Conn) applyTransportParameters() {
 	if params.MaxUDPPayloadSize > 0 && params.MaxUDPPayloadSize < maxPacketSize {
 		maxPacketSize = params.MaxUDPPayloadSize
 	}
+	// growth ceiling for path MTU discovery: without this a connection carrying a
+	// proven path ceiling would obey it for the first flight and then grow past it
+	// (measured 1232 -> 1438 on a real loopback path).
+	maxPacketSize = c.config.maxGrowablePacketSize(maxPacketSize)
 	c.mtuDiscoverer = newMTUDiscoverer(
 		c.rttStats,
 		protocol.ByteCount(c.config.InitialPacketSize),

@@ -124,6 +124,21 @@ func populateConfig(config *Config) *Config {
 		maxConnectionReceiveWindow = max(maxConnectionReceiveWindow, initialConnectionReceiveWindow)
 	}
 
+	// The hard ceiling decides last, after every preference and default above.
+	//
+	// The ordering is the whole point. ChromeParrot replaces initialPacketSize
+	// with its fingerprint size (1250) and never reads any ceiling, so a ceiling
+	// applied before this point - which is what an earlier design did by reusing
+	// DisablePathMTUDiscovery as the signal - is silently discarded for the
+	// default hysteria2 configuration. Applied after, it cannot be: a fingerprint
+	// is a preference and a proven path capacity is a constraint.
+	//
+	// This value is what every later consumer reads: the sent packet handler, the
+	// packet size estimate, CipherSuite's maxPacketSize and the MTU discoverer's
+	// starting size all take config.InitialPacketSize, so the clamp reaches the
+	// wire without a second mechanism.
+	initialPacketSize = clampToInitialPacketSizeCeiling(initialPacketSize, config.InitialPacketSizeCeiling)
+
 	return &Config{
 		GetConfigForClient:               config.GetConfigForClient,
 		Versions:                         versions,
@@ -142,6 +157,7 @@ func populateConfig(config *Config) *Config {
 		OmitMaxDatagramFrameSize:         omitMaxDatagramFrameSize,
 		AssumePeerMaxDatagramFrameSize:   config.AssumePeerMaxDatagramFrameSize,
 		InitialPacketSize:                initialPacketSize,
+		InitialPacketSizeCeiling:         config.InitialPacketSizeCeiling,
 		DisablePathMTUDiscovery:          config.DisablePathMTUDiscovery,
 		EnableStreamResetPartialDelivery: config.EnableStreamResetPartialDelivery,
 		Allow0RTT:                        config.Allow0RTT,
@@ -150,4 +166,34 @@ func populateConfig(config *Config) *Config {
 		DisablePathManager:               config.DisablePathManager,
 		ChromeParrot:                     config.ChromeParrot,
 	}
+}
+
+// clampToInitialPacketSizeCeiling lowers packetSize to ceiling when a ceiling is
+// set and the size exceeds it, and returns packetSize unchanged otherwise.
+//
+// It never RAISES a size: the ceiling states what the path can carry, so a size
+// already below it is what the caller asked for and is none of this function's
+// business.
+func clampToInitialPacketSizeCeiling(packetSize uint16, ceiling uint16) uint16 {
+	if ceiling == 0 || packetSize <= ceiling {
+		return packetSize
+	}
+	return ceiling
+}
+
+// maxGrowablePacketSize returns the largest packet size path MTU discovery may
+// grow to: the peer's advertised limit, lowered by this connection's ceiling when
+// one is set.
+//
+// MTU discovery probes upward from the initial packet size towards the peer's
+// max_udp_payload_size, so without this a connection carrying a ceiling would obey
+// it for the first flight and then grow past it during the handshake - measured at
+// 1232 -> 1438 on a real loopback path. The ceiling is a property of the path the
+// connection runs over, and the path does not change because the peer is willing
+// to receive more.
+func (c *Config) maxGrowablePacketSize(peerLimit protocol.ByteCount) protocol.ByteCount {
+	if c.InitialPacketSizeCeiling != 0 && protocol.ByteCount(c.InitialPacketSizeCeiling) < peerLimit {
+		return protocol.ByteCount(c.InitialPacketSizeCeiling)
+	}
+	return peerLimit
 }

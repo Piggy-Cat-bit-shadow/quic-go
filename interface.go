@@ -169,6 +169,24 @@ type Config struct {
 	// If set too high, the path might not support packets of that size, leading to a timeout of the QUIC handshake.
 	// Values below 1200 are invalid.
 	InitialPacketSize uint16
+	// InitialPacketSizeCeiling is the largest packet size this connection may ever
+	// put on the wire, in UDP payload bytes.
+	//
+	// It exists because InitialPacketSize is a PREFERENCE and this is a
+	// CONSTRAINT, and one field cannot carry both: a size the caller preferred may
+	// legitimately be replaced (ChromeParrot pins its own fingerprint size), while
+	// a size the path cannot carry may not be.
+	//
+	// Unlike InitialPacketSize, this value survives every override. It is applied
+	// after ChromeParrot and after the per-connection defaults have been chosen,
+	// and it also caps the size path MTU discovery may grow to, so a connection
+	// given a ceiling cannot exceed it after the handshake either.
+	//
+	// 0 means no ceiling. A non-zero value is a hard correctness ceiling: it must
+	// describe capacity the path is known to have, and it is never raised to
+	// accommodate anything else - a caller that cannot honour a ceiling it proved
+	// must not set one.
+	InitialPacketSizeCeiling uint16
 	// DisablePathMTUDiscovery disables Path MTU Discovery (RFC 8899).
 	// This allows the sending of QUIC packets that fully utilize the available MTU of the path.
 	// Path MTU discovery is only available on systems that allow setting of the Don't Fragment (DF) bit.

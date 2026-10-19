@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/sagernet/quic-go/internal/utils"
 	"github.com/sagernet/quic-go/internal/utils/ringbuffer"
@@ -23,6 +24,10 @@ type datagramQueue struct {
 	rcvMx    sync.Mutex
 	rcvQueue [][]byte
 	rcvd     chan struct{} // used to notify Receive that a new datagram was received
+	// droppedRcv counts received datagrams discarded because rcvQueue was full. It is incremented
+	// only on the actual drop path and read with one atomic load, so it does not add per-packet
+	// work to the receive path.
+	droppedRcv atomic.Uint64
 
 	closeErr error
 	closed   chan struct{}
@@ -211,9 +216,19 @@ func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
 		}
 	}
 	h.rcvMx.Unlock()
-	if !queued && h.logger.Debug() {
-		h.logger.Debugf("Discarding received DATAGRAM frame (%d bytes payload)", len(f.Data))
+	if !queued {
+		h.droppedRcv.Add(1)
+		if h.logger.Debug() {
+			h.logger.Debugf("Discarding received DATAGRAM frame (%d bytes payload)", len(f.Data))
+		}
 	}
+}
+
+// DroppedDatagrams reports how many received DATAGRAM frames were discarded because the receive
+// queue was full. The counter is monotonic and independent of the queue's depth, so a lossy tunnel
+// can be told apart from an idle one.
+func (h *datagramQueue) DroppedDatagrams() uint64 {
+	return h.droppedRcv.Load()
 }
 
 // Receive gets a received DATAGRAM frame.

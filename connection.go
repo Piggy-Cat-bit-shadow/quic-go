@@ -3224,6 +3224,16 @@ func (c *Conn) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	return c.datagramQueue.Receive(ctx)
 }
 
+// DroppedDatagrams reports how many received DATAGRAM frames this connection discarded because its
+// receive queue was full. It is a monotonic counter: a tunnel with a slow consumer can be told
+// apart from an idle one without per-packet logging.
+func (c *Conn) DroppedDatagrams() uint64 {
+	if c.datagramQueue == nil {
+		return 0
+	}
+	return c.datagramQueue.DroppedDatagrams()
+}
+
 // LocalAddr returns the local address of the QUIC connection.
 func (c *Conn) LocalAddr() net.Addr { return c.conn.LocalAddr() }
 

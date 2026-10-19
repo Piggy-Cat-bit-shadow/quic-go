@@ -168,7 +168,7 @@ func (s *frameSorter) push(data []byte, offset protocol.ByteCount, doneCb func()
 		}
 	}
 
-	if wasCut && len(data) < protocol.MinStreamFrameBufferSize {
+	if (wasCut && len(data) < protocol.MinStreamFrameBufferSize) || overProvisionedFrameBuffer(data) {
 		newData := make([]byte, len(data))
 		copy(newData, data)
 		data = newData
@@ -184,6 +184,18 @@ func (s *frameSorter) push(data []byte, offset protocol.ByteCount, doneCb func()
 
 	s.queue[start] = frameSorterEntry{Data: data, DoneCb: doneCb}
 	return nil
+}
+
+// overProvisionedFrameBuffer reports whether the sorted frame keeps far more capacity than it
+// needs.
+//
+// ParseStreamFrame copies any STREAM payload of at least MinStreamFrameBufferSize into a pooled
+// frame whose buffer is MaxPacketBufferSize (1452) bytes. A peer that sends minimum-size frames
+// after a gap therefore made the sorter pin 1452 bytes per 128-byte frame — arithmetic up to ~11x
+// the advertised receive window. Copying only when the waste is at least 2x keeps ordinary
+// MTU-sized frames on their pooled buffer and pays nothing for them.
+func overProvisionedFrameBuffer(data []byte) bool {
+	return len(data) > 0 && cap(data) > 2*len(data)
 }
 
 // deleteConsecutive deletes consecutive frames from the queue, starting at pos

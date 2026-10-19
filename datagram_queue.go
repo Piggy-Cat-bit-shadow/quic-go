@@ -222,6 +222,12 @@ func (h *datagramQueue) Receive(ctx context.Context) ([]byte, error) {
 		h.rcvMx.Lock()
 		if len(h.rcvQueue) > 0 {
 			data := h.rcvQueue[0]
+			// Clear the slot before advancing the slice: a reslice alone leaves the pointer in
+			// the backing array, and the GC scans the whole array object, so every delivered
+			// datagram stayed reachable until the queue was reallocated. The queue is bounded at
+			// 128 entries, so this was retention rather than a leak, but it made a drained
+			// connection's heap look like a full one.
+			h.rcvQueue[0] = nil
 			h.rcvQueue = h.rcvQueue[1:]
 			h.rcvMx.Unlock()
 			return data, nil

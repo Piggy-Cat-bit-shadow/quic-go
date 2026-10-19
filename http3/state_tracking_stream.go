@@ -190,6 +190,9 @@ start:
 	s.mx.Lock()
 	if len(s.queue) > 0 {
 		data := s.queue[0]
+		// Clear the slot before reslicing; see datagramQueue.Receive for why the pointer in the
+		// backing array keeps the delivered payload reachable.
+		s.queue[0] = nil
 		s.queue = s.queue[1:]
 		s.mx.Unlock()
 		return data, nil

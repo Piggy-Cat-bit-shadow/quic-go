@@ -2,7 +2,7 @@ name: verify
 
 on:
   push:
-    branches: [jiejie-masque-mod9]
+    branches: [sagernet]
   workflow_dispatch:
 
 permissions:

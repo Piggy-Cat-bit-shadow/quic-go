@@ -1,0 +1,31 @@
+name: verify
+
+on:
+  push:
+    branches: [jiejie-masque-mod9]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build
+        run: go build ./...
+      - name: Test
+        run: go test -count=1 -timeout 15m ./...
+      - name: Race
+        if: runner.os == 'Linux'
+        run: go test -race -count=1 -timeout 15m ./...

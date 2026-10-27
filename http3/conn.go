@@ -313,8 +313,14 @@ func (c *rawConn) sendDatagramOwned(streamID quic.StreamID, payload OwnedDatagra
 	prefixLen := quicvarint.Len(uint64(streamID / 4))
 	header := payload.Prepend(prefixLen)
 	if header == nil {
-		// No headroom: take the copying path. The payload layout is unchanged, so this is safe.
-		return c.sendDatagram(streamID, payload.Bytes())
+		// No headroom: take the copying path. The payload layout is unchanged, but ownership still
+		// transfers on success: the caller treats a nil error as "the transport consumed it" and
+		// does not release it. sendDatagram only copies bytes, so release here in that case.
+		err := c.sendDatagram(streamID, payload.Bytes())
+		if err == nil {
+			payload.Release()
+		}
+		return err
 	}
 	// Write the varint into exactly the headroom that was reserved. Append never reallocates here
 	// because header has precisely Len(quarterStreamID) bytes of capacity, and the result is
@@ -371,8 +377,12 @@ func (c *rawConn) sendDatagramsOwned(streamID quic.StreamID, payloads []OwnedDat
 	if !allPayloadsHaveHeadroom(payloads, prefixLen) {
 		for _, p := range payloads {
 			if err := c.sendDatagram(streamID, p.Bytes()); err != nil {
+				// The caller still owns every payload on error; it will release the whole batch.
 				return err
 			}
+		}
+		for _, p := range payloads {
+			p.Release()
 		}
 		return nil
 	}

@@ -3269,7 +3269,13 @@ func (c *Conn) AddPath(t *Transport) (*Path, error) {
 	if c.peerParams.DisableActiveMigration {
 		return nil, errors.New("server disabled connection migration")
 	}
-	if err := t.init(false); err != nil {
+	// A path transport parses every incoming packet's destination connection ID at ONE
+	// fixed length, and it must be the length this connection actually uses. A single-use
+	// dial transport may have chosen zero-length source connection IDs; initializing the
+	// path transport with the default length would parse the first payload bytes as a
+	// destination connection ID and drop every packet on that path as unknown, so a path
+	// probe could never see its response.
+	if err := t.init(c.connIDGenerator.generator.ConnectionIDLen() == 0); err != nil {
 		return nil, err
 	}
 	return c.getPathManager().NewPath(

@@ -31,6 +31,8 @@ import (
 	"time"
 
 	quic "github.com/sagernet/quic-go"
+
+	"github.com/stretchr/testify/require"
 )
 
 // countingPacketConn counts Close calls so "the socket is closed exactly once" is observable.
@@ -501,6 +503,40 @@ func (c *failingWritePacketConn) WriteTo(packet []byte, addr net.Addr) (int, err
 		return 0, syscall.ENETUNREACH
 	}
 	return c.PacketConn.WriteTo(packet, addr)
+}
+
+// TestClosingAPathOnAClosedConnectionDoesNotPanic is the shutdown-under-network-change case: the
+// application is shutting down (or the connection just died) while a migration attempt is still
+// unwinding, so Path.Close runs after the connection ended. The connection-ID manager is closed by
+// then, and it used to PANIC - killing the process instead of failing one candidate.
+func TestClosingAPathOnAClosedConnectionDoesNotPanic(t *testing.T) {
+	server := startRetireServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	socket, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	primaryTransport := &quic.Transport{Conn: socket}
+	conn, err := primaryTransport.Dial(ctx, server.addr, testTLSConfig(testCertificate(t), false), &quic.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path, _, _ := addRealPath(t, ctx, conn)
+	// End the connection first: the ID manager is closed from here on.
+	if err := conn.CloseWithError(0, ""); err != nil {
+		t.Fatal(err)
+	}
+	<-conn.Context().Done()
+
+	// Unwinding the attempt must be quiet: closing the path retires its connection ID, and probing
+	// it can no longer be answered - both are ordinary failures, not panics.
+	require.NotPanics(t, func() { _ = path.Close() }, "closing a path after the connection ended must not panic")
+	probeCtx, probeCancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer probeCancel()
+	require.NotPanics(t, func() { _ = path.Probe(probeCtx) }, "probing a path after the connection ended must not panic")
 }
 
 // TestConcurrentRetireWithCIDRotationIsRaceFree drives the runner-table access from both sides at

@@ -252,7 +252,14 @@ func (h *connIDManager) SetHandshakeComplete() {
 // When called with the same pathID, it will return the same connection ID,
 // unless the peer requested that this connection ID be retired.
 func (h *connIDManager) GetConnIDForPath(id pathID) (protocol.ConnectionID, bool) {
-	h.assertNotClosed()
+	// A candidate path lives on the application's goroutine, not on the run loop: Path.Probe and
+	// Path.Close can reach here while (or after) the connection ends, which is exactly the
+	// shutdown-under-network-change case. There is no connection ID to hand out then, and the
+	// caller treats false as "this path cannot be used" - panicking here would crash the process
+	// instead of failing one candidate.
+	if h.closed {
+		return protocol.ConnectionID{}, false
+	}
 	// if we're using zero-length connection IDs, we don't need to change the connection ID
 	if h.activeConnectionID.Len() == 0 {
 		return protocol.ConnectionID{}, true
@@ -277,7 +284,11 @@ func (h *connIDManager) GetConnIDForPath(id pathID) (protocol.ConnectionID, bool
 }
 
 func (h *connIDManager) RetireConnIDForPath(pathID pathID) {
-	h.assertNotClosed()
+	// Same rule as GetConnIDForPath: retiring a path's connection ID after the connection ended is
+	// a no-op (the manager already released every token in Close), never a panic.
+	if h.closed {
+		return
+	}
 	// if we're using zero-length connection IDs, we don't need to change the connection ID
 	if h.activeConnectionID.Len() == 0 {
 		return

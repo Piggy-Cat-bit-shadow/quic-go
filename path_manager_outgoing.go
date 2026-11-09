@@ -343,6 +343,14 @@ func (pm *pathManagerOutgoing) MarkSwitchApplied(id pathID, tr *Transport) {
 	}
 }
 
+// SwitchPending reports whether a path switch has been requested and not yet taken by the run
+// loop. When it has not, the transport the connection sends on is still the one it started with.
+func (pm *pathManagerOutgoing) SwitchPending() bool {
+	pm.mx.Lock()
+	defer pm.mx.Unlock()
+	return pm.pathToSwitchTo != nil
+}
+
 // AppliedPath reports the path the connection last moved its send path to. 0 is the path the
 // handshake was performed on.
 func (pm *pathManagerOutgoing) AppliedPath() pathID {

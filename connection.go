@@ -190,7 +190,12 @@ type Conn struct {
 
 	// closeChan is used to notify the run loop that it should terminate
 	closeChan chan struct{}
-	closeErr  atomic.Pointer[closeError]
+	// sendFailureChan carries a write failure from a send queue to the run loop, together with the
+	// queue it came from. A failure of the path the connection is LEAVING must not destroy it, so
+	// the run loop - which knows which queue is current and whether a switch is pending - decides,
+	// instead of the queue goroutine destroying the connection on its own.
+	sendFailureChan chan sendFailure
+	closeErr        atomic.Pointer[closeError]
 
 	ctx                   context.Context
 	ctxCancel             context.CancelCauseFunc
@@ -573,6 +578,7 @@ func (c *Conn) preSetup() {
 	c.receivedPackets.Init(8)
 	c.notifyReceivedPacket = make(chan struct{}, 1)
 	c.closeChan = make(chan struct{}, 1)
+	c.sendFailureChan = make(chan sendFailure, 1)
 	c.sendingScheduled = make(chan struct{}, 1)
 	c.handshakeCompleteChan = make(chan struct{})
 
@@ -610,11 +616,11 @@ func (c *Conn) run() (err error) {
 	if err := c.handleHandshakeEvents(monotime.Now()); err != nil {
 		return err
 	}
-	go func() {
-		if err := c.sendQueue.Run(); err != nil {
-			c.destroyImpl(err)
+	go func(queue sender) {
+		if err := queue.Run(); err != nil {
+			c.reportSendFailure(queue, err)
 		}
-	}()
+	}(c.sendQueue)
 
 	if c.perspective == protocol.PerspectiveClient {
 		c.scheduleSending() // so the ClientHello actually gets sent
@@ -686,6 +692,17 @@ runLoop:
 			case <-c.timer.C:
 			case <-c.sendingScheduled:
 			case <-sendQueueAvailable:
+			case failure := <-c.sendFailureChan:
+				// A write on a send path failed. Only the queue the connection is writing through
+				// right now may end the connection: a failure of the path it is leaving is what a
+				// migration is for, and applying the pending switch is the answer to it.
+				if failure.queue != c.sendQueue {
+					continue
+				}
+				if !c.applyPendingPathSwitch() {
+					c.setCloseError(&closeError{err: failure.err})
+					break runLoop
+				}
 			case <-c.notifyReceivedPacket:
 				wasProcessed, err := c.handlePackets()
 				if err != nil {
@@ -961,10 +978,11 @@ func (c *Conn) switchToNewPath(tr *Transport, id pathID, now monotime.Time) {
 	c.mtuDiscoverer.Reset(now, initialPacketSize, maxPacketSize)
 	c.conn = newSendConn(tr.conn, c.conn.RemoteAddr(), packetInfo{}, utils.DefaultLogger) // TODO: find a better way
 	c.sendQueue.Close()
-	c.sendQueue = newSendQueue(c.conn)
+	queue := newSendQueue(c.conn)
+	c.sendQueue = queue
 	go func() {
-		if err := c.sendQueue.Run(); err != nil {
-			c.destroyImpl(err)
+		if err := queue.Run(); err != nil {
+			c.reportSendFailure(queue, err)
 		}
 	}()
 	// Publish only after the new send path is installed: a retirement waiting on this signal
@@ -972,6 +990,41 @@ func (c *Conn) switchToNewPath(tr *Transport, id pathID, now monotime.Time) {
 	if pm := c.pathManagerOutgoing.Load(); pm != nil {
 		pm.MarkSwitchApplied(id, tr)
 	}
+}
+
+// sendFailure is one write failure, tagged with the send queue it came from.
+type sendFailure struct {
+	queue sender
+	err   error
+}
+
+// reportSendFailure hands a write failure to the run loop, which owns the decision to end the
+// connection: the failing queue may belong to a path the connection is already leaving.
+func (c *Conn) reportSendFailure(queue sender, err error) {
+	select {
+	case c.sendFailureChan <- sendFailure{queue: queue, err: err}:
+	case <-c.ctx.Done():
+		// The connection ended first; the failure is moot.
+	}
+}
+
+// applyPendingPathSwitch installs the path switch the run loop has not taken yet, and reports
+// whether there was one. It is used when a write failed on the current send path: if a switch is
+// already in flight, the failure belongs to the path being left.
+func (c *Conn) applyPendingPathSwitch() bool {
+	if c.perspective != protocol.PerspectiveClient {
+		return false
+	}
+	pm := c.pathManagerOutgoing.Load()
+	if pm == nil {
+		return false
+	}
+	tr, id, ok := pm.ShouldSwitchPath()
+	if !ok {
+		return false
+	}
+	c.switchToNewPath(tr, id, monotime.Now())
+	return true
 }
 
 func (c *Conn) handleHandshakeComplete(now monotime.Time) error {
@@ -3368,22 +3421,25 @@ func (c *Conn) RetireTransport(ctx context.Context, t *Transport) error {
 		// No path was ever added, so this transport is the one the connection sends on.
 		return ErrPathActive
 	}
-	for {
-		applied := pm.AppliedTransport()
-		if applied == nil {
-			// Path 0 is the path the handshake was performed on.
-			applied = c.initialTransport
+	if pm.SwitchPending() {
+		// A switch away from this transport is already requested. Detach NOW, before waiting: the
+		// transport is the path being left, and its socket is often failing at this very moment.
+		// A dying socket's read error would otherwise reach Transport.close and destroy the
+		// connection before the switch had a chance to land - the exact case a network change is.
+		if err := c.detachTransport(t); err != nil {
+			return err
 		}
-		if applied != t {
-			break
+		if c.retiredTransports == nil {
+			c.retiredTransports = make(map[*Transport]struct{}, 2)
 		}
-		select {
-		case <-pm.SwitchApplied():
-		case <-ctx.Done():
-			return context.Cause(ctx)
-		case <-c.Context().Done():
-			return context.Cause(c.Context())
+		c.retiredTransports[t] = struct{}{}
+		if err := c.waitSwitchAway(pm, ctx, t); err != nil {
+			return err
 		}
+		return nil
+	}
+	if err := c.waitSwitchAway(pm, ctx, t); err != nil {
+		return err
 	}
 	if err := c.detachTransport(t); err != nil {
 		return err
@@ -3398,6 +3454,27 @@ func (c *Conn) RetireTransport(ctx context.Context, t *Transport) error {
 	// it. Tearing the loop down here would need a deadline the raw socket path does not
 	// reliably honor, and waiting for a loop that never notices is worse.
 	return nil
+}
+
+// waitSwitchAway blocks until the connection no longer sends on t.
+func (c *Conn) waitSwitchAway(pm *pathManagerOutgoing, ctx context.Context, t *Transport) error {
+	for {
+		applied := pm.AppliedTransport()
+		if applied == nil {
+			// Path 0 is the path the handshake was performed on.
+			applied = c.initialTransport
+		}
+		if applied != t {
+			return nil
+		}
+		select {
+		case <-pm.SwitchApplied():
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		case <-c.Context().Done():
+			return context.Cause(c.Context())
+		}
+	}
 }
 
 // detachTransport removes this connection from a transport's routing table and from the

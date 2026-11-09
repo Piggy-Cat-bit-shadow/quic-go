@@ -26,6 +26,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -388,6 +389,78 @@ func TestRepeatedMigrationStopsAtTheConnectionIDBudget(t *testing.T) {
 	if got := server.accepted.Load(); got != 1 {
 		t.Fatalf("the endpoint saw %d connections, want 1: repeated migration must not reconnect", got)
 	}
+}
+
+// TestADyingOldPathDoesNotTakeTheMigratedConnectionDown is the network-change failure mode that
+// matters: the socket the connection was using fails while the switch to the new path is still
+// being installed. Writes on it fail with a hard error (the route is gone, as when Wi-Fi drops),
+// and that must not end the connection the migration is saving.
+//
+// The sequence is the hostile ordering: request the switch, arm the failure on the old path, then
+// retire it. The run loop sees the failed write while a switch is pending and applies the switch
+// instead of destroying the connection; only a failure of the queue the connection is writing
+// through right now may end it.
+func TestADyingOldPathDoesNotTakeTheMigratedConnectionDown(t *testing.T) {
+	server := startRetireServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	socket, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing := &failingWritePacketConn{PacketConn: socket}
+	primaryTransport := &quic.Transport{Conn: failing}
+	conn, err := primaryTransport.Dial(ctx, server.addr, testTLSConfig(testCertificate(t), false), &quic.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseWithError(0, "")
+
+	stream, err := conn.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	echo(t, stream, "before-the-old-path-died")
+
+	path, _, _ := addRealPath(t, ctx, conn)
+	if err := path.Switch(); err != nil {
+		t.Fatalf("switch: %v", err)
+	}
+	// The old path dies while the switch is on its way to the run loop.
+	failing.failWrites()
+
+	retireCtx, retireCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer retireCancel()
+	if err := conn.RetireTransport(retireCtx, primaryTransport); err != nil {
+		t.Fatalf("the retirement must survive the old path dying: %v", err)
+	}
+	select {
+	case <-conn.Context().Done():
+		t.Fatalf("the dying old path ended the connection: %v", conn.Context().Err())
+	case <-time.After(200 * time.Millisecond):
+	}
+	echo(t, stream, "after-the-old-path-died")
+	if got := server.accepted.Load(); got != 1 {
+		t.Fatalf("the endpoint saw %d connections, want 1", got)
+	}
+}
+
+// failingWritePacketConn accepts packets until it is armed, then fails every write with the same
+// hard error a socket whose interface went down returns. Reads keep working: a link that is gone
+// does not report an error on a blocked read.
+type failingWritePacketConn struct {
+	net.PacketConn
+	armed atomic.Bool
+}
+
+func (c *failingWritePacketConn) failWrites() { c.armed.Store(true) }
+
+func (c *failingWritePacketConn) WriteTo(packet []byte, addr net.Addr) (int, error) {
+	if c.armed.Load() {
+		return 0, syscall.ENETUNREACH
+	}
+	return c.PacketConn.WriteTo(packet, addr)
 }
 
 // TestConcurrentRetireWithCIDRotationIsRaceFree drives the runner-table access from both sides at

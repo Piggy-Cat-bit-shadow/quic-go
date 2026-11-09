@@ -3,6 +3,7 @@ package quic
 import (
 	"fmt"
 	"slices"
+	"sync"
 
 	"github.com/sagernet/quic-go/internal/protocol"
 	"github.com/sagernet/quic-go/internal/qerr"
@@ -17,6 +18,16 @@ type newConnID struct {
 }
 
 type connIDManager struct {
+	// mutex guards every field below.
+	//
+	// The manager is touched from two goroutines: the connection's run loop (handshake, rotation,
+	// Close) and the application goroutine through Path.Probe/Path.Close (GetConnIDForPath,
+	// RetireConnIDForPath). The fork's earlier fix only made those application-side calls tolerate a
+	// closed manager; the access itself was still unsynchronised, and -race caught Close racing
+	// RetireConnIDForPath on closed/pathProbing when a candidate was abandoned as the connection
+	// ended. One mutex, held by every entry point, makes the closed check and the map access one step.
+	mutex sync.Mutex
+
 	queue []newConnID
 
 	highestProbingID uint64
@@ -58,11 +69,15 @@ func newConnIDManager(
 }
 
 func (h *connIDManager) AddFromPreferredAddress(connID protocol.ConnectionID, resetToken protocol.StatelessResetToken) error {
-	return h.addConnectionID(1, connID, resetToken)
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	return h.addConnectionIDLocked(1, connID, resetToken)
 }
 
 func (h *connIDManager) Add(f *wire.NewConnectionIDFrame) error {
-	if err := h.add(f); err != nil {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	if err := h.addLocked(f); err != nil {
 		return err
 	}
 	if len(h.queue) >= protocol.MaxActiveConnectionIDs {
@@ -71,7 +86,7 @@ func (h *connIDManager) Add(f *wire.NewConnectionIDFrame) error {
 	return nil
 }
 
-func (h *connIDManager) add(f *wire.NewConnectionIDFrame) error {
+func (h *connIDManager) addLocked(f *wire.NewConnectionIDFrame) error {
 	if h.activeConnectionID.Len() == 0 {
 		return &qerr.TransportError{
 			ErrorCode:    qerr.ProtocolViolation,
@@ -117,19 +132,19 @@ func (h *connIDManager) add(f *wire.NewConnectionIDFrame) error {
 		return nil
 	}
 
-	if err := h.addConnectionID(f.SequenceNumber, f.ConnectionID, f.StatelessResetToken); err != nil {
+	if err := h.addConnectionIDLocked(f.SequenceNumber, f.ConnectionID, f.StatelessResetToken); err != nil {
 		return err
 	}
 
 	// Retire the active connection ID, if necessary.
 	if h.activeSequenceNumber < f.RetirePriorTo {
 		// The queue is guaranteed to have at least one element at this point.
-		h.updateConnectionID()
+		h.updateConnectionIDLocked()
 	}
 	return nil
 }
 
-func (h *connIDManager) addConnectionID(seq uint64, connID protocol.ConnectionID, resetToken protocol.StatelessResetToken) error {
+func (h *connIDManager) addConnectionIDLocked(seq uint64, connID protocol.ConnectionID, resetToken protocol.StatelessResetToken) error {
 	// fast path: add to the end of the queue
 	if len(h.queue) == 0 || h.queue[len(h.queue)-1].SequenceNumber < seq {
 		h.queue = append(h.queue, newConnID{
@@ -165,8 +180,8 @@ func (h *connIDManager) addConnectionID(seq uint64, connID protocol.ConnectionID
 	return nil // unreachable
 }
 
-func (h *connIDManager) updateConnectionID() {
-	h.assertNotClosed()
+func (h *connIDManager) updateConnectionIDLocked() {
+	h.assertNotClosedLocked()
 	h.queueControlFrame(&wire.RetireConnectionIDFrame{
 		SequenceNumber: h.activeSequenceNumber,
 	})
@@ -186,6 +201,8 @@ func (h *connIDManager) updateConnectionID() {
 }
 
 func (h *connIDManager) Close() {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
 	h.closed = true
 	if h.activeStatelessResetToken != nil {
 		h.removeStatelessResetToken(*h.activeStatelessResetToken)
@@ -200,6 +217,8 @@ func (h *connIDManager) Close() {
 // is called when the server performs a Retry
 // and when the server changes the connection ID in the first Initial sent
 func (h *connIDManager) ChangeInitialConnID(newConnID protocol.ConnectionID) {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
 	if h.activeSequenceNumber != 0 {
 		panic("expected first connection ID to have sequence number 0")
 	}
@@ -208,7 +227,9 @@ func (h *connIDManager) ChangeInitialConnID(newConnID protocol.ConnectionID) {
 
 // is called when the server provides a stateless reset token in the transport parameters
 func (h *connIDManager) SetStatelessResetToken(token protocol.StatelessResetToken) {
-	h.assertNotClosed()
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	h.assertNotClosedLocked()
 	if h.activeSequenceNumber != 0 {
 		panic("expected first connection ID to have sequence number 0")
 	}
@@ -217,10 +238,12 @@ func (h *connIDManager) SetStatelessResetToken(token protocol.StatelessResetToke
 }
 
 func (h *connIDManager) SentPacket() {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
 	h.packetsSinceLastChange++
 }
 
-func (h *connIDManager) shouldUpdateConnID() bool {
+func (h *connIDManager) shouldUpdateConnIDLocked() bool {
 	if !h.handshakeComplete {
 		return false
 	}
@@ -236,14 +259,18 @@ func (h *connIDManager) shouldUpdateConnID() bool {
 }
 
 func (h *connIDManager) Get() protocol.ConnectionID {
-	h.assertNotClosed()
-	if h.shouldUpdateConnID() {
-		h.updateConnectionID()
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	h.assertNotClosedLocked()
+	if h.shouldUpdateConnIDLocked() {
+		h.updateConnectionIDLocked()
 	}
 	return h.activeConnectionID
 }
 
 func (h *connIDManager) SetHandshakeComplete() {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
 	h.handshakeComplete = true
 }
 
@@ -252,6 +279,8 @@ func (h *connIDManager) SetHandshakeComplete() {
 // When called with the same pathID, it will return the same connection ID,
 // unless the peer requested that this connection ID be retired.
 func (h *connIDManager) GetConnIDForPath(id pathID) (protocol.ConnectionID, bool) {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
 	// A candidate path lives on the application's goroutine, not on the run loop: Path.Probe and
 	// Path.Close can reach here while (or after) the connection ends, which is exactly the
 	// shutdown-under-network-change case. There is no connection ID to hand out then, and the
@@ -284,6 +313,8 @@ func (h *connIDManager) GetConnIDForPath(id pathID) (protocol.ConnectionID, bool
 }
 
 func (h *connIDManager) RetireConnIDForPath(pathID pathID) {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
 	// Same rule as GetConnIDForPath: retiring a path's connection ID after the connection ended is
 	// a no-op (the manager already released every token in Close), never a panic.
 	if h.closed {
@@ -306,6 +337,8 @@ func (h *connIDManager) RetireConnIDForPath(pathID pathID) {
 }
 
 func (h *connIDManager) IsActiveStatelessResetToken(token protocol.StatelessResetToken) bool {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
 	if h.activeStatelessResetToken != nil {
 		if *h.activeStatelessResetToken == token {
 			return true
@@ -325,7 +358,7 @@ func (h *connIDManager) IsActiveStatelessResetToken(token protocol.StatelessRese
 // If the connection ID is rotated, a new entry would be inserted into the packet handler map,
 // leading to a memory leak of the connection struct.
 // See https://github.com/quic-go/quic-go/pull/4852 for more details.
-func (h *connIDManager) assertNotClosed() {
+func (h *connIDManager) assertNotClosedLocked() {
 	if h.closed {
 		panic("connection ID manager is closed")
 	}

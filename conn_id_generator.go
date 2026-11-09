@@ -3,6 +3,7 @@ package quic
 import (
 	"fmt"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/sagernet/quic-go/internal/monotime"
@@ -47,6 +48,17 @@ type connIDGenerator struct {
 	generator   ConnectionIDGenerator
 	highestSeq  uint64
 	connRunners connRunners
+
+	// runnerMu guards connRunners. Every other field of this generator is owned by the
+	// connection's run loop, but the runner table is not: a migration attaches a runner from
+	// the run loop, and Conn.RetireTransport removes one from the goroutine that noticed the
+	// network change. Rotation (issueNewConnID) and final removal (RemoveAll) run on the run
+	// loop and read or write the same map, so every access goes through this lock.
+	//
+	// Lock order: runnerMu is taken before a transport's mutex, never after. The runner
+	// callbacks below enter the transport (Transport.Add / Remove / ReplaceWithClosed), so a
+	// retirement must release runnerMu before it takes t.mutex to clear the handler table.
+	runnerMu sync.Mutex
 
 	activeSrcConnIDs        map[uint64]protocol.ConnectionID
 	connIDsToRetire         []connIDToRetire       // sorted by t
@@ -140,7 +152,7 @@ func (m *connIDGenerator) issueNewConnID() error {
 		return err
 	}
 	m.activeSrcConnIDs[m.highestSeq+1] = connID
-	m.connRunners.AddConnectionID(connID)
+	m.addConnectionID(connID)
 	m.queueControlFrame(&wire.NewConnectionIDFrame{
 		SequenceNumber:      m.highestSeq + 1,
 		ConnectionID:        connID,
@@ -165,12 +177,15 @@ func (m *connIDGenerator) RemoveRetiredConnIDs(now monotime.Time) {
 		if c.t.After(now) {
 			break
 		}
-		m.connRunners.RemoveConnectionID(c.connID)
+		m.removeConnectionID(c.connID)
 		m.connIDsToRetire = m.connIDsToRetire[1:]
 	}
 }
 
 func (m *connIDGenerator) RemoveAll() {
+	m.runnerMu.Lock()
+	defer m.runnerMu.Unlock()
+
 	if m.initialClientDestConnID != nil {
 		m.connRunners.RemoveConnectionID(*m.initialClientDestConnID)
 	}
@@ -183,6 +198,9 @@ func (m *connIDGenerator) RemoveAll() {
 }
 
 func (m *connIDGenerator) ReplaceWithClosed(connClose []byte, expiry time.Duration) {
+	m.runnerMu.Lock()
+	defer m.runnerMu.Unlock()
+
 	connIDs := make([]protocol.ConnectionID, 0, len(m.activeSrcConnIDs)+len(m.connIDsToRetire)+1)
 	if m.initialClientDestConnID != nil {
 		connIDs = append(connIDs, *m.initialClientDestConnID)
@@ -196,14 +214,34 @@ func (m *connIDGenerator) ReplaceWithClosed(connClose []byte, expiry time.Durati
 	m.connRunners.ReplaceWithClosed(connIDs, connClose, expiry)
 }
 
+// addConnectionID and removeConnectionID are the locked forms of the runner-table calls the
+// run loop makes while rotating or expiring connection IDs.
+func (m *connIDGenerator) addConnectionID(id protocol.ConnectionID) {
+	m.runnerMu.Lock()
+	defer m.runnerMu.Unlock()
+	m.connRunners.AddConnectionID(id)
+}
+
+func (m *connIDGenerator) removeConnectionID(id protocol.ConnectionID) {
+	m.runnerMu.Lock()
+	defer m.runnerMu.Unlock()
+	m.connRunners.RemoveConnectionID(id)
+}
+
 // RemoveConnRunner stops routing this connection's connection IDs to runner. It is used when
 // a transport is retired after a migration, so that later connection ID rotations cannot add
 // the connection back to a socket that is about to be closed.
 func (m *connIDGenerator) RemoveConnRunner(runner connRunner) {
+	m.runnerMu.Lock()
+	defer m.runnerMu.Unlock()
+
 	delete(m.connRunners, runner)
 }
 
 func (m *connIDGenerator) AddConnRunner(runner connRunner, r connRunnerCallbacks) {
+	m.runnerMu.Lock()
+	defer m.runnerMu.Unlock()
+
 	// The transport might have already been added earlier.
 	// This happens if the application migrates back to and old path.
 	if _, ok := m.connRunners[runner]; ok {

@@ -109,13 +109,15 @@ func (h *sendQueue) Run() error {
 					// A hard write error is a fact about this path, not necessarily about this
 					// connection: the connection may be migrating to another path right now. Hand
 					// it to the run loop, which owns that decision, and keep the queue usable so
-					// the switch can still carry packets.
+					// the switch can still carry packets. While the queue is draining for a close
+					// there is nobody to ask, and blocking on the report would keep the connection
+					// from ever finishing its own shutdown.
 					e.buf.Release()
 					select {
 					case h.available <- struct{}{}:
 					default:
 					}
-					if h.onSendFailure != nil {
+					if h.onSendFailure != nil && !shouldClose {
 						h.onSendFailure(err)
 					}
 					continue

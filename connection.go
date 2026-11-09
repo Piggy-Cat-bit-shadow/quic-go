@@ -1021,11 +1021,25 @@ func (c *Conn) reportSendFailure(err error) {
 
 // reportSendFailureFrom is the queue-tagged form: a failure from a queue the connection no longer
 // writes through is about the path it already left.
+//
+// It never blocks. The send queue calls it while it may be draining for a close, and the close path
+// waits for that queue to finish - a blocking report would deadlock the connection's own teardown.
+// When a failure is already queued the newest one replaces it: the queued one may belong to a path
+// the connection has already left.
 func (c *Conn) reportSendFailureFrom(queue sender, err error) {
+	failure := sendFailure{queue: queue, err: err}
 	select {
-	case c.sendFailureChan <- sendFailure{queue: queue, err: err}:
-	case <-c.ctx.Done():
-		// The connection ended first; the failure is moot.
+	case c.sendFailureChan <- failure:
+		return
+	default:
+	}
+	select {
+	case <-c.sendFailureChan:
+	default:
+	}
+	select {
+	case c.sendFailureChan <- failure:
+	default:
 	}
 }
 

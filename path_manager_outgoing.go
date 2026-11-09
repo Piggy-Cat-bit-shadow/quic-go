@@ -121,11 +121,13 @@ func (p *pathOutgoing) Validated() <-chan struct{} { return p.validated }
 type pathManagerOutgoing struct {
 	getConnID       func(pathID) (_ protocol.ConnectionID, ok bool)
 	retireConnID    func(pathID)
+	detachPath      func(*Transport) error
 	scheduleSending func()
 
 	mx             sync.Mutex
 	activePath     pathID
 	appliedPath    pathID
+	appliedTr      *Transport
 	pathsToProbe   []pathID
 	paths          map[pathID]*pathOutgoing
 	nextPathID     pathID
@@ -139,6 +141,7 @@ type pathManagerOutgoing struct {
 func newPathManagerOutgoing(
 	getConnID func(pathID) (_ protocol.ConnectionID, ok bool),
 	retireConnID func(pathID),
+	detachPath func(*Transport) error,
 	scheduleSending func(),
 ) *pathManagerOutgoing {
 	return &pathManagerOutgoing{
@@ -146,6 +149,7 @@ func newPathManagerOutgoing(
 		nextPathID:      1,
 		getConnID:       getConnID,
 		retireConnID:    retireConnID,
+		detachPath:      detachPath,
 		scheduleSending: scheduleSending,
 		paths:           make(map[pathID]*pathOutgoing, 4),
 		switchApplied:   make(chan struct{}, 1),
@@ -181,29 +185,40 @@ func (pm *pathManagerOutgoing) enqueueProbe(p *Path) {
 }
 
 func (pm *pathManagerOutgoing) removePath(id pathID) error {
-	if err := pm.removePathImpl(id); err != nil {
+	tr, err := pm.removePathImpl(id)
+	if err != nil {
 		return err
+	}
+	// A closed path must not keep the connection registered on its transport: the caller that
+	// owns the socket closes it next, and a transport whose read loop stops destroys every
+	// connection still registered there. Detaching here is what makes "abandon the candidate,
+	// then close its socket" safe. The active path is refused above, so this can never detach
+	// the transport the connection is sending on.
+	if tr != nil && pm.detachPath != nil {
+		if err := pm.detachPath(tr); err != nil {
+			return err
+		}
 	}
 	pm.scheduleSending()
 	return nil
 }
 
-func (pm *pathManagerOutgoing) removePathImpl(id pathID) error {
+func (pm *pathManagerOutgoing) removePathImpl(id pathID) (*Transport, error) {
 	pm.mx.Lock()
 	defer pm.mx.Unlock()
 
 	if id == pm.activePath {
-		return errors.New("cannot close active path")
+		return nil, errors.New("cannot close active path")
 	}
 	p, ok := pm.paths[id]
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	if len(p.pathChallenges) > 0 {
 		pm.retireConnID(id)
 	}
 	delete(pm.paths, id)
-	return nil
+	return p.tr, nil
 }
 
 func (pm *pathManagerOutgoing) switchToPath(id pathID) error {
@@ -310,12 +325,14 @@ func (pm *pathManagerOutgoing) ShouldSwitchPath() (*Transport, pathID, bool) {
 	return p.tr, p.id, true
 }
 
-// MarkSwitchApplied records that the connection has actually moved its send path to id.
-// Switch only registers the request and the run loop applies it, so a retirement that acted
-// on the registration alone could close the transport the connection is still writing through.
-func (pm *pathManagerOutgoing) MarkSwitchApplied(id pathID) {
+// MarkSwitchApplied records that the connection has actually moved its send path to id and the
+// transport that path uses. Switch only registers the request and the run loop applies it, so a
+// retirement that acted on the registration alone could close the transport the connection is
+// still writing through.
+func (pm *pathManagerOutgoing) MarkSwitchApplied(id pathID, tr *Transport) {
 	pm.mx.Lock()
 	pm.appliedPath = id
+	pm.appliedTr = tr
 	pm.mx.Unlock()
 	select {
 	case pm.switchApplied <- struct{}{}:
@@ -329,6 +346,15 @@ func (pm *pathManagerOutgoing) AppliedPath() pathID {
 	pm.mx.Lock()
 	defer pm.mx.Unlock()
 	return pm.appliedPath
+}
+
+// AppliedTransport reports the transport the connection currently sends on, as installed by the
+// run loop. nil means the path the handshake was performed on: the caller that owns the dial
+// transport knows which object that is.
+func (pm *pathManagerOutgoing) AppliedTransport() *Transport {
+	pm.mx.Lock()
+	defer pm.mx.Unlock()
+	return pm.appliedTr
 }
 
 // SwitchApplied is signaled whenever the connection applies a path switch.

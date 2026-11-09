@@ -109,7 +109,10 @@ func TestMigrateKeepsOneConnectionAndOneStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, err := quic.Dial(ctx, primary, listener.Addr(), testTLSConfig(certificate, false), &quic.Config{})
+	// Dial through a Transport the test keeps a handle on: the connection remembers which
+	// transport carried its handshake, and the owner of that socket is the one that retires it.
+	primaryTransport := &quic.Transport{Conn: primary}
+	conn, err := primaryTransport.Dial(ctx, listener.Addr(), testTLSConfig(certificate, false), &quic.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +200,9 @@ func TestMigrateKeepsOneConnectionAndOneStream(t *testing.T) {
 
 	// Retire the handshake transport, then physically close its socket: the migrated
 	// connection must survive both.
-	if err = conn.RetireHandshakeTransport(); err != nil {
+	retireCtx, retireCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer retireCancel()
+	if err = conn.RetireTransport(retireCtx, primaryTransport); err != nil {
 		t.Fatalf("retire handshake transport: %v", err)
 	}
 	if conn.Context().Err() != nil {

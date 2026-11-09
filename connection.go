@@ -143,6 +143,13 @@ type Conn struct {
 	// that carried the handshake - without tearing the connection down.
 	initialTransport *Transport
 
+	// retireAccess serializes RetireTransport calls, and retiredTransports makes a repeated
+	// retirement of the same transport an idempotent no-op. Both are only used by the goroutine
+	// that owns the transport being retired (the dialer / network-change hook), never by the run
+	// loop, so they add no ordering to the connection's own state machine.
+	retireAccess      sync.Mutex
+	retiredTransports map[*Transport]struct{}
+
 	// lazily initialzed: most connections never migrate
 	pathManager         *pathManager
 	largestRcvdAppData  protocol.PacketNumber
@@ -963,7 +970,7 @@ func (c *Conn) switchToNewPath(tr *Transport, id pathID, now monotime.Time) {
 	// Publish only after the new send path is installed: a retirement waiting on this signal
 	// may stop and close the transport that is no longer being written through.
 	if pm := c.pathManagerOutgoing.Load(); pm != nil {
-		pm.MarkSwitchApplied(id)
+		pm.MarkSwitchApplied(id, tr)
 	}
 }
 
@@ -3261,6 +3268,7 @@ func (c *Conn) getPathManager() *pathManagerOutgoing {
 	new := newPathManagerOutgoing(
 		c.connIDManager.GetConnIDForPath,
 		c.connIDManager.RetireConnIDForPath,
+		c.detachTransport,
 		c.scheduleSending,
 	)
 	if c.pathManagerOutgoing.CompareAndSwap(old, new) {
@@ -3304,33 +3312,75 @@ func (c *Conn) AddPath(t *Transport) (*Path, error) {
 	), nil
 }
 
-// RetireHandshakeTransport releases the transport the connection was dialed on, after the
-// connection has migrated to another path. The connection, its streams and the current path
-// are unaffected; the caller is expected to close the packet conn it passed to the dial
-// transport afterwards.
+// HandshakeTransport reports the transport the connection was dialed on, or nil for a server
+// connection. It is the object to hand to RetireTransport once the connection has migrated away
+// from it: the caller that dialed owns the socket, the connection only remembers which transport
+// carried its handshake.
+func (c *Conn) HandshakeTransport() *Transport { return c.initialTransport }
+
+// ownHandler reports whether handler routes packets to this connection. A connection is
+// registered in a transport's handler table through a per-connection wrapper, so pointer identity
+// on the exported *Conn alone would report every one of its own handlers as foreign.
+func (c *Conn) ownHandler(handler packetHandler) bool {
+	if handler == packetHandler(c) {
+		return true
+	}
+	if wrapper, ok := handler.(*wrappedConn); ok {
+		return wrapper.Conn == c
+	}
+	return false
+}
+
+// RetireTransport releases a transport that this connection no longer sends on, after the
+// connection has been migrated to another path. The connection, its streams and the current
+// path are unaffected; the caller is expected to close the packet conn it passed to the dial
+// transport afterwards, exactly once, because it is the socket's owner.
 //
-// This exists because the transport owns the connection's read loop and destroys every
-// connection routed through it when its socket fails: without detaching the connection first,
-// physically closing the old socket would tear the migrated connection down. Retiring before
-// a switch has actually been applied waits for the run loop to install the new send path.
-func (c *Conn) RetireHandshakeTransport() error {
+// This exists because a transport owns the read loop of the connections routed through it and
+// destroys them when its socket fails: without detaching the connection first, physically
+// closing the old socket would tear the migrated connection down.
+//
+// The wait is on the state the run loop actually installed, not on the switch request: Switch
+// only registers the request, so acting on the registration alone would detach the transport
+// the connection is still writing through. The applied state is also compared against THIS
+// transport, so a stale or late switch to some other path can neither satisfy the wait for this
+// connection's send path nor be confused with the candidate that this call is about.
+//
+// Retiring the same transport twice is a no-op, and a wait that outlives ctx leaves the
+// connection untouched.
+func (c *Conn) RetireTransport(ctx context.Context, t *Transport) error {
 	if c.perspective != protocol.PerspectiveClient {
-		return errors.New("only a client can retire the handshake transport")
+		return errors.New("only a client can retire a transport")
 	}
-	pm := c.pathManagerOutgoing.Load()
-	if pm == nil {
-		return ErrPathActive
-	}
-	t := c.initialTransport
 	if t == nil {
 		return errPathDoesNotExist
 	}
+
+	c.retireAccess.Lock()
+	defer c.retireAccess.Unlock()
+
+	if _, retired := c.retiredTransports[t]; retired {
+		return nil
+	}
+
+	pm := c.pathManagerOutgoing.Load()
+	if pm == nil {
+		// No path was ever added, so this transport is the one the connection sends on.
+		return ErrPathActive
+	}
 	for {
-		if pm.AppliedPath() != 0 {
+		applied := pm.AppliedTransport()
+		if applied == nil {
+			// Path 0 is the path the handshake was performed on.
+			applied = c.initialTransport
+		}
+		if applied != t {
 			break
 		}
 		select {
 		case <-pm.SwitchApplied():
+		case <-ctx.Done():
+			return context.Cause(ctx)
 		case <-c.Context().Done():
 			return context.Cause(c.Context())
 		}
@@ -3338,6 +3388,10 @@ func (c *Conn) RetireHandshakeTransport() error {
 	if err := c.detachTransport(t); err != nil {
 		return err
 	}
+	if c.retiredTransports == nil {
+		c.retiredTransports = make(map[*Transport]struct{}, 2)
+	}
+	c.retiredTransports[t] = struct{}{}
 	// The read loop is left alone on purpose: it is blocked on the caller's packet conn, and
 	// the caller is about to close that conn. The resulting read error reaches
 	// Transport.close, which finds no handler for this connection and therefore cannot touch
@@ -3350,18 +3404,32 @@ func (c *Conn) RetireHandshakeTransport() error {
 // connection ID generator's runners, so nothing arriving on that transport can reach the
 // connection and nothing will be added back later. It does not touch the connection.
 func (c *Conn) detachTransport(t *Transport) error {
-	// A retired path transport must not carry any other connection: stopping its read loop
-	// makes the transport close everything still registered here. The dial transports this
-	// API is for (quic.Dial / quic.DialConn) are single-use by construction.
-	if !t.isSingleUse {
-		return errors.New("cannot retire a transport that may carry other connections")
+	// The caller is going to close this socket, which stops its read loop. That is only safe
+	// when the transport carries no other connection: the dial transports (quic.Dial /
+	// quic.DialConn) are single-use, and a path transport is created for exactly one path of
+	// exactly one connection.
+	t.mutex.Lock()
+	foreign := false
+	for _, handler := range t.handlers {
+		if !c.ownHandler(handler) {
+			foreign = true
+			break
+		}
 	}
+	t.mutex.Unlock()
+	if foreign {
+		return errors.New("cannot retire a transport that carries another connection")
+	}
+	// Remove the runner BEFORE clearing the handler table, and in that lock order: a rotation
+	// on the run loop takes the runner lock and then this transport's mutex, so the reverse
+	// order here would deadlock. Once the runner is gone no rotation can re-add a connection ID
+	// to this transport, so the clear below cannot be undone by a late rotation.
+	c.connIDGenerator.RemoveConnRunner((*packetHandlerMap)(t))
 	t.mutex.Lock()
 	for connID := range t.handlers {
 		delete(t.handlers, connID)
 	}
 	t.mutex.Unlock()
-	c.connIDGenerator.RemoveConnRunner((*packetHandlerMap)(t))
 	return nil
 }
 

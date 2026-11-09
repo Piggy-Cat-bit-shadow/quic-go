@@ -194,4 +194,25 @@ func TestMigrateKeepsOneConnectionAndOneStream(t *testing.T) {
 	if conn.Context().Err() != nil {
 		t.Fatalf("the connection ended: %v", conn.Context().Err())
 	}
+
+	// Retire the handshake transport, then physically close its socket: the migrated
+	// connection must survive both.
+	if err = conn.RetireHandshakeTransport(); err != nil {
+		t.Fatalf("retire handshake transport: %v", err)
+	}
+	if conn.Context().Err() != nil {
+		t.Fatalf("retiring the handshake transport ended the connection: %v", conn.Context().Err())
+	}
+	if err = primary.Close(); err != nil {
+		t.Fatalf("close the old socket: %v", err)
+	}
+	select {
+	case <-conn.Context().Done():
+		t.Fatal("closing the retired socket ended the migrated connection")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err = writeMessage(stream, []byte("after-close")); err != nil {
+		t.Fatalf("write after the old socket closed: %v", err)
+	}
+	expect("after-close")
 }

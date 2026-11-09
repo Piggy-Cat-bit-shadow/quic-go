@@ -19,6 +19,8 @@ var (
 	ErrPathClosed = errors.New("path closed")
 	// ErrPathNotValidated is returned when trying to use a path before path probing has completed.
 	ErrPathNotValidated = errors.New("path not yet validated")
+	// ErrPathActive is returned when trying to retire the path the connection is using.
+	ErrPathActive = errors.New("path active")
 )
 
 var errPathDoesNotExist = errors.New("path does not exist")
@@ -104,6 +106,7 @@ func (p *Path) Close() error {
 }
 
 type pathOutgoing struct {
+	id             pathID
 	pathChallenges [][8]byte // length is implicitly limited by exponential backoff
 	tr             *Transport
 	isValidated    bool
@@ -122,10 +125,12 @@ type pathManagerOutgoing struct {
 
 	mx             sync.Mutex
 	activePath     pathID
+	appliedPath    pathID
 	pathsToProbe   []pathID
 	paths          map[pathID]*pathOutgoing
 	nextPathID     pathID
 	pathToSwitchTo *pathOutgoing
+	switchApplied  chan struct{}
 }
 
 // newPathManagerOutgoing creates a new pathManagerOutgoing object. This
@@ -143,6 +148,7 @@ func newPathManagerOutgoing(
 		retireConnID:    retireConnID,
 		scheduleSending: scheduleSending,
 		paths:           make(map[pathID]*pathOutgoing, 4),
+		switchApplied:   make(chan struct{}, 1),
 	}
 }
 
@@ -157,6 +163,7 @@ func (pm *pathManagerOutgoing) addPath(p *Path, enablePath func()) *pathOutgoing
 	}
 
 	path := &pathOutgoing{
+		id:         p.id,
 		tr:         p.tr,
 		probeSent:  make(chan struct{}, 1),
 		validated:  make(chan struct{}),
@@ -291,17 +298,41 @@ func (pm *pathManagerOutgoing) HandlePathResponseFrame(f *wire.PathResponseFrame
 	}
 }
 
-func (pm *pathManagerOutgoing) ShouldSwitchPath() (*Transport, bool) {
+func (pm *pathManagerOutgoing) ShouldSwitchPath() (*Transport, pathID, bool) {
 	pm.mx.Lock()
 	defer pm.mx.Unlock()
 
 	if pm.pathToSwitchTo == nil {
-		return nil, false
+		return nil, 0, false
 	}
 	p := pm.pathToSwitchTo
 	pm.pathToSwitchTo = nil
-	return p.tr, true
+	return p.tr, p.id, true
 }
+
+// MarkSwitchApplied records that the connection has actually moved its send path to id.
+// Switch only registers the request and the run loop applies it, so a retirement that acted
+// on the registration alone could close the transport the connection is still writing through.
+func (pm *pathManagerOutgoing) MarkSwitchApplied(id pathID) {
+	pm.mx.Lock()
+	pm.appliedPath = id
+	pm.mx.Unlock()
+	select {
+	case pm.switchApplied <- struct{}{}:
+	default:
+	}
+}
+
+// AppliedPath reports the path the connection last moved its send path to. 0 is the path the
+// handshake was performed on.
+func (pm *pathManagerOutgoing) AppliedPath() pathID {
+	pm.mx.Lock()
+	defer pm.mx.Unlock()
+	return pm.appliedPath
+}
+
+// SwitchApplied is signaled whenever the connection applies a path switch.
+func (pm *pathManagerOutgoing) SwitchApplied() <-chan struct{} { return pm.switchApplied }
 
 type pathManagerOutgoingAckHandler pathManagerOutgoing
 

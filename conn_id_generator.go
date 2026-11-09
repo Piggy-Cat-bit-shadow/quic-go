@@ -196,6 +196,13 @@ func (m *connIDGenerator) ReplaceWithClosed(connClose []byte, expiry time.Durati
 	m.connRunners.ReplaceWithClosed(connIDs, connClose, expiry)
 }
 
+// RemoveConnRunner stops routing this connection's connection IDs to runner. It is used when
+// a transport is retired after a migration, so that later connection ID rotations cannot add
+// the connection back to a socket that is about to be closed.
+func (m *connIDGenerator) RemoveConnRunner(runner connRunner) {
+	delete(m.connRunners, runner)
+}
+
 func (m *connIDGenerator) AddConnRunner(runner connRunner, r connRunnerCallbacks) {
 	// The transport might have already been added earlier.
 	// This happens if the application migrates back to and old path.

@@ -138,6 +138,10 @@ type Conn struct {
 
 	conn      sendConn
 	sendQueue sender
+	// initialTransport is the transport the connection was dialed on (client only). It is
+	// kept so that a migrated connection can release that transport - and with it the socket
+	// that carried the handshake - without tearing the connection down.
+	initialTransport *Transport
 
 	// lazily initialzed: most connections never migrate
 	pathManager         *pathManager
@@ -720,9 +724,9 @@ runLoop:
 		if c.perspective == protocol.PerspectiveClient {
 			pm := c.pathManagerOutgoing.Load()
 			if pm != nil {
-				tr, ok := pm.ShouldSwitchPath()
+				tr, id, ok := pm.ShouldSwitchPath()
 				if ok {
-					c.switchToNewPath(tr, now)
+					c.switchToNewPath(tr, id, now)
 				}
 			}
 		}
@@ -937,7 +941,7 @@ func (c *Conn) idleTimeoutStartTime() monotime.Time {
 	return startTime
 }
 
-func (c *Conn) switchToNewPath(tr *Transport, now monotime.Time) {
+func (c *Conn) switchToNewPath(tr *Transport, id pathID, now monotime.Time) {
 	initialPacketSize := protocol.ByteCount(c.config.InitialPacketSize)
 	c.sentPacketHandler.MigratedPath(now, initialPacketSize)
 	maxPacketSize := protocol.ByteCount(protocol.MaxPacketBufferSize)
@@ -956,6 +960,11 @@ func (c *Conn) switchToNewPath(tr *Transport, now monotime.Time) {
 			c.destroyImpl(err)
 		}
 	}()
+	// Publish only after the new send path is installed: a retirement waiting on this signal
+	// may stop and close the transport that is no longer being written through.
+	if pm := c.pathManagerOutgoing.Load(); pm != nil {
+		pm.MarkSwitchApplied(id)
+	}
 }
 
 func (c *Conn) handleHandshakeComplete(now monotime.Time) error {
@@ -3293,6 +3302,67 @@ func (c *Conn) AddPath(t *Transport) (*Path, error) {
 			)
 		},
 	), nil
+}
+
+// RetireHandshakeTransport releases the transport the connection was dialed on, after the
+// connection has migrated to another path. The connection, its streams and the current path
+// are unaffected; the caller is expected to close the packet conn it passed to the dial
+// transport afterwards.
+//
+// This exists because the transport owns the connection's read loop and destroys every
+// connection routed through it when its socket fails: without detaching the connection first,
+// physically closing the old socket would tear the migrated connection down. Retiring before
+// a switch has actually been applied waits for the run loop to install the new send path.
+func (c *Conn) RetireHandshakeTransport() error {
+	if c.perspective != protocol.PerspectiveClient {
+		return errors.New("only a client can retire the handshake transport")
+	}
+	pm := c.pathManagerOutgoing.Load()
+	if pm == nil {
+		return ErrPathActive
+	}
+	t := c.initialTransport
+	if t == nil {
+		return errPathDoesNotExist
+	}
+	for {
+		if pm.AppliedPath() != 0 {
+			break
+		}
+		select {
+		case <-pm.SwitchApplied():
+		case <-c.Context().Done():
+			return context.Cause(c.Context())
+		}
+	}
+	if err := c.detachTransport(t); err != nil {
+		return err
+	}
+	// The read loop is left alone on purpose: it is blocked on the caller's packet conn, and
+	// the caller is about to close that conn. The resulting read error reaches
+	// Transport.close, which finds no handler for this connection and therefore cannot touch
+	// it. Tearing the loop down here would need a deadline the raw socket path does not
+	// reliably honor, and waiting for a loop that never notices is worse.
+	return nil
+}
+
+// detachTransport removes this connection from a transport's routing table and from the
+// connection ID generator's runners, so nothing arriving on that transport can reach the
+// connection and nothing will be added back later. It does not touch the connection.
+func (c *Conn) detachTransport(t *Transport) error {
+	// A retired path transport must not carry any other connection: stopping its read loop
+	// makes the transport close everything still registered here. The dial transports this
+	// API is for (quic.Dial / quic.DialConn) are single-use by construction.
+	if !t.isSingleUse {
+		return errors.New("cannot retire a transport that may carry other connections")
+	}
+	t.mutex.Lock()
+	for connID := range t.handlers {
+		delete(t.handlers, connID)
+	}
+	t.mutex.Unlock()
+	c.connIDGenerator.RemoveConnRunner((*packetHandlerMap)(t))
+	return nil
 }
 
 // HandshakeComplete blocks until the handshake completes (or fails).

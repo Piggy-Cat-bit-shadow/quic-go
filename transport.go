@@ -335,6 +335,7 @@ func (t *Transport) doDial(
 		return nil, err
 	}
 	t.handlers[srcConnID] = conn
+	conn.initialTransport = t
 	t.mutex.Unlock()
 
 	// The error channel needs to be buffered, as the run loop will continue running

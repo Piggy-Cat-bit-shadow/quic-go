@@ -14,6 +14,9 @@ type sender interface {
 	WouldBlock() bool
 	Available() <-chan struct{}
 	Close()
+	// SetSendFailureHandler sets the callback for a hard write error. The connection decides
+	// whether that error ends it: the failing path may be one it is migrating away from.
+	SetSendFailureHandler(func(error))
 }
 
 type queueEntry struct {
@@ -28,13 +31,16 @@ type sendQueue struct {
 	runStopped  chan struct{} // runStopped when the run loop returns
 	available   chan struct{}
 	conn        sendConn
+	// onSendFailure reports a hard write error to the connection, which decides whether it ends
+	// the connection. The queue keeps running so that a path switch can still carry packets.
+	onSendFailure func(error)
 }
 
 var _ sender = &sendQueue{}
 
 const sendQueueCapacity = 8
 
-func newSendQueue(conn sendConn) sender {
+func newSendQueue(conn sendConn) *sendQueue {
 	return &sendQueue{
 		conn:        conn,
 		runStopped:  make(chan struct{}),
@@ -43,6 +49,11 @@ func newSendQueue(conn sendConn) sender {
 		queue:       make(chan queueEntry, sendQueueCapacity),
 	}
 }
+
+// SetSendFailureHandler sets the callback that receives a hard write error. The queue keeps
+// running: whether such an error ends the connection is the connection's decision, because the
+// failing path may be one it is migrating away from.
+func (h *sendQueue) SetSendFailureHandler(handler func(error)) { h.onSendFailure = handler }
 
 // Send sends out a packet. It's guaranteed to not block.
 // Callers need to make sure that there's actually space in the send queue by calling WouldBlock.
@@ -95,7 +106,19 @@ func (h *sendQueue) Run() error {
 				// 3. Eventual detection of loss PingFrame.
 				var tooLarge *DatagramTooLargeError
 				if !isSendMsgSizeErr(err) && !isNoBufferSpaceErr(err) && !errors.As(err, &tooLarge) {
-					return err
+					// A hard write error is a fact about this path, not necessarily about this
+					// connection: the connection may be migrating to another path right now. Hand
+					// it to the run loop, which owns that decision, and keep the queue usable so
+					// the switch can still carry packets.
+					e.buf.Release()
+					select {
+					case h.available <- struct{}{}:
+					default:
+					}
+					if h.onSendFailure != nil {
+						h.onSendFailure(err)
+					}
+					continue
 				}
 			}
 			e.buf.Release()

@@ -396,10 +396,10 @@ func TestRepeatedMigrationStopsAtTheConnectionIDBudget(t *testing.T) {
 // being installed. Writes on it fail with a hard error (the route is gone, as when Wi-Fi drops),
 // and that must not end the connection the migration is saving.
 //
-// The sequence is the hostile ordering: request the switch, arm the failure on the old path, then
-// retire it. The run loop sees the failed write while a switch is pending and applies the switch
-// instead of destroying the connection; only a failure of the queue the connection is writing
-// through right now may end it.
+// The sequence is the hostile ordering: open the migration window, request the switch, arm the
+// failure on the old path, then retire it. The run loop sees the failed write while a switch is
+// pending and applies the switch instead of destroying the connection; only a failure of the
+// queue the connection is writing through right now, with no migration window open, still ends it.
 func TestADyingOldPathDoesNotTakeTheMigratedConnectionDown(t *testing.T) {
 	server := startRetireServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -416,6 +416,10 @@ func TestADyingOldPathDoesNotTakeTheMigratedConnectionDown(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.CloseWithError(0, "")
+
+	// The migration window: without it, a write failure on the path being left is fatal.
+	stopExpectation := conn.ExpectPathSwitch(10 * time.Second)
+	defer stopExpectation()
 
 	stream, err := conn.OpenStream()
 	if err != nil {
@@ -443,6 +447,42 @@ func TestADyingOldPathDoesNotTakeTheMigratedConnectionDown(t *testing.T) {
 	echo(t, stream, "after-the-old-path-died")
 	if got := server.accepted.Load(); got != 1 {
 		t.Fatalf("the endpoint saw %d connections, want 1", got)
+	}
+}
+
+// TestWithoutTheMigrationWindowADyingPathStillEndsTheConnection is the control for the test above:
+// the same failing write, but no migration window open and no switch pending. The failure must
+// still end the connection, so "the write failed" is not swallowed for every connection that ever
+// loses a route.
+func TestWithoutTheMigrationWindowADyingPathStillEndsTheConnection(t *testing.T) {
+	server := startRetireServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	socket, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing := &failingWritePacketConn{PacketConn: socket}
+	conn, err := (&quic.Transport{Conn: failing}).Dial(ctx, server.addr, testTLSConfig(testCertificate(t), false), &quic.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseWithError(0, "")
+	stream, err := conn.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	echo(t, stream, "before-the-write-failure")
+
+	failing.failWrites()
+	// Another write on the stream produces a packet on the failing path.
+	_ = writeMessage(stream, []byte("after-the-write-failure"))
+	select {
+	case <-conn.Context().Done():
+		t.Logf("the connection ended as it should: %v", context.Cause(conn.Context()))
+	case <-time.After(3 * time.Second):
+		t.Fatal("a hard write failure with no migration window must end the connection")
 	}
 }
 

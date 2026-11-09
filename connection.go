@@ -150,6 +150,12 @@ type Conn struct {
 	retireAccess      sync.Mutex
 	retiredTransports map[*Transport]struct{}
 
+	// switchExpectation is the migration window: while it is open, a failing send on the current
+	// path is a fact about the path being left, not a reason to end the connection.
+	switchExpectAccess sync.Mutex
+	switchExpectStart  time.Time
+	switchExpectGrace  time.Duration
+
 	// lazily initialzed: most connections never migrate
 	pathManager         *pathManager
 	largestRcvdAppData  protocol.PacketNumber
@@ -545,6 +551,7 @@ func (c *Conn) preSetup() {
 	c.initialStream = newInitialCryptoStream(c.perspective == protocol.PerspectiveClient, c.config.ChromeParrot)
 	c.handshakeStream = newCryptoStream()
 	c.sendQueue = newSendQueue(c.conn)
+	c.sendQueue.SetSendFailureHandler(func(err error) { c.reportSendFailureFrom(c.sendQueue, err) })
 	c.retransmissionQueue = newRetransmissionQueue()
 	c.frameParser = *wire.NewFrameParser(
 		c.config.EnableDatagrams,
@@ -618,7 +625,7 @@ func (c *Conn) run() (err error) {
 	}
 	go func(queue sender) {
 		if err := queue.Run(); err != nil {
-			c.reportSendFailure(queue, err)
+			c.reportSendFailureFrom(queue, err)
 		}
 	}(c.sendQueue)
 
@@ -699,10 +706,17 @@ runLoop:
 				if failure.queue != c.sendQueue {
 					continue
 				}
-				if !c.applyPendingPathSwitch() {
-					c.setCloseError(&closeError{err: failure.err})
-					break runLoop
+				if c.applyPendingPathSwitch() {
+					continue
 				}
+				if c.perspective == protocol.PerspectiveClient && c.switchExpectationActive() {
+					// The caller is migrating this connection: drop the packet and let the switch
+					// land instead of ending the connection on the path that is being left.
+					c.logger.Debugf("send failure during a path switch: %s", failure.err)
+					continue
+				}
+				c.setCloseError(&closeError{err: failure.err})
+				break runLoop
 			case <-c.notifyReceivedPacket:
 				wasProcessed, err := c.handlePackets()
 				if err != nil {
@@ -979,10 +993,11 @@ func (c *Conn) switchToNewPath(tr *Transport, id pathID, now monotime.Time) {
 	c.conn = newSendConn(tr.conn, c.conn.RemoteAddr(), packetInfo{}, utils.DefaultLogger) // TODO: find a better way
 	c.sendQueue.Close()
 	queue := newSendQueue(c.conn)
+	queue.SetSendFailureHandler(func(err error) { c.reportSendFailureFrom(queue, err) })
 	c.sendQueue = queue
 	go func() {
 		if err := queue.Run(); err != nil {
-			c.reportSendFailure(queue, err)
+			c.reportSendFailureFrom(queue, err)
 		}
 	}()
 	// Publish only after the new send path is installed: a retirement waiting on this signal
@@ -1000,7 +1015,13 @@ type sendFailure struct {
 
 // reportSendFailure hands a write failure to the run loop, which owns the decision to end the
 // connection: the failing queue may belong to a path the connection is already leaving.
-func (c *Conn) reportSendFailure(queue sender, err error) {
+func (c *Conn) reportSendFailure(err error) {
+	c.reportSendFailureFrom(c.sendQueue, err)
+}
+
+// reportSendFailureFrom is the queue-tagged form: a failure from a queue the connection no longer
+// writes through is about the path it already left.
+func (c *Conn) reportSendFailureFrom(queue sender, err error) {
 	select {
 	case c.sendFailureChan <- sendFailure{queue: queue, err: err}:
 	case <-c.ctx.Done():
@@ -3371,15 +3392,49 @@ func (c *Conn) AddPath(t *Transport) (*Path, error) {
 // carried its handshake.
 func (c *Conn) HandshakeTransport() *Transport { return c.initialTransport }
 
+// ExpectPathSwitch opens the migration window for this connection and returns the function that
+// closes it. While the window is open, a hard write failure on the current send path does not end
+// the connection: the path is being left, and the same failure is exactly what a network change
+// looks like. Outside the window the connection ends on such a failure, as it always did.
+//
+// The grace period bounds the window even if the caller forgets to close it. A connection that is
+// not being migrated is unaffected.
+func (c *Conn) ExpectPathSwitch(grace time.Duration) (stop func()) {
+	c.switchExpectAccess.Lock()
+	c.switchExpectStart = time.Now()
+	c.switchExpectGrace = grace
+	c.switchExpectAccess.Unlock()
+	return func() {
+		c.switchExpectAccess.Lock()
+		c.switchExpectStart = time.Time{}
+		c.switchExpectGrace = 0
+		c.switchExpectAccess.Unlock()
+	}
+}
+
+// switchExpectationActive reports whether a migration window is open.
+func (c *Conn) switchExpectationActive() bool {
+	c.switchExpectAccess.Lock()
+	defer c.switchExpectAccess.Unlock()
+	if c.switchExpectStart.IsZero() {
+		return false
+	}
+	return time.Since(c.switchExpectStart) < c.switchExpectGrace
+}
+
 // ownHandler reports whether handler routes packets to this connection. A connection is
 // registered in a transport's handler table through a per-connection wrapper, so pointer identity
-// on the exported *Conn alone would report every one of its own handlers as foreign.
+// on the exported *Conn alone would report every one of its own handlers as foreign. The handlers
+// a closing connection leaves behind to answer stateless resets are its own too.
 func (c *Conn) ownHandler(handler packetHandler) bool {
 	if handler == packetHandler(c) {
 		return true
 	}
-	if wrapper, ok := handler.(*wrappedConn); ok {
-		return wrapper.Conn == c
+	switch typed := handler.(type) {
+	case *wrappedConn:
+		return typed.Conn == c
+	case *closedLocalConn, *closedRemoteConn:
+		return true
 	}
 	return false
 }
@@ -3487,15 +3542,17 @@ func (c *Conn) detachTransport(t *Transport) error {
 	// exactly one connection.
 	t.mutex.Lock()
 	foreign := false
+	foreignType := ""
 	for _, handler := range t.handlers {
 		if !c.ownHandler(handler) {
 			foreign = true
+			foreignType = fmt.Sprintf("%T", handler)
 			break
 		}
 	}
 	t.mutex.Unlock()
 	if foreign {
-		return errors.New("cannot retire a transport that carries another connection")
+		return fmt.Errorf("cannot retire a transport that carries another connection (%d handlers, foreign %s)", len(t.handlers), foreignType)
 	}
 	// Remove the runner BEFORE clearing the handler table, and in that lock order: a rotation
 	// on the run loop takes the runner lock and then this transport's mutex, so the reverse

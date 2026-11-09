@@ -222,11 +222,17 @@ func (t *Transport) doRoundTripOpt(req *http.Request, opt RoundTripOpt, isRetrie
 	select {
 	case <-cl.dialing:
 	case <-req.Context().Done():
+		// getClient took a reference for this request before it waited. The request is
+		// leaving before it can own a stream, so release the reference: without this the
+		// entry's count never returns to zero and CloseIdleConnections - which closes only
+		// entries with useCount == 0 - can never release the connection.
+		cl.useCount.Add(-1)
 		return nil, context.Cause(req.Context())
 	}
 
 	if cl.dialErr != nil {
 		t.removeClient(hostname)
+		cl.useCount.Add(-1)
 		return nil, cl.dialErr
 	}
 	defer cl.useCount.Add(-1)

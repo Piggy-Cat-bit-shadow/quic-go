@@ -298,6 +298,98 @@ func TestRetireRefusesTheTransportTheConnectionStillSendsOn(t *testing.T) {
 	echo(t, stream, "after-closing-A")
 }
 
+// TestRepeatedMigrationStopsAtTheConnectionIDBudget characterises how many times one connection
+// can be moved with this pin's default connection-ID budget, and pins that running out is a
+// bounded, local failure.
+//
+// Every migration consumes one connection ID from each peer's advertised pool, and the budget is
+// what the peer advertises (protocol.MaxActiveConnectionIDs, 4) capped by what this side issues
+// (protocol.MaxIssuedConnectionIDs, 6). With the default budget two migrations validate and the
+// third candidate cannot be validated: the endpoint has no connection ID left to probe the new
+// path with, so it never answers, the probe ends at its own deadline, and the connection keeps
+// working on the last path that was applied.
+//
+// A -> B -> C therefore works, which is what the window's acceptance asks for, and a further move
+// degrades to "stay where you are" instead of breaking the connection. Raising the advertised
+// budget moves the boundary (eight active IDs validate five moves), so this test asserts the floor
+// the production policy relies on rather than an exact number.
+func TestRepeatedMigrationStopsAtTheConnectionIDBudget(t *testing.T) {
+	server := startRetireServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	conn, primaryCloses, primaryTransport := dialThroughTransport(t, ctx, server.addr)
+	defer conn.CloseWithError(0, "")
+	stream, err := conn.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	echo(t, stream, "before-the-migrations")
+
+	previousTransport := primaryTransport
+	previousSocket := primaryCloses
+	var previousPath *quic.Path // nil: the handshake path has no Path object
+	applied := 0
+	const attempts = 6
+	for round := 0; round < attempts; round++ {
+		socket, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		counting := &countingPacketConn{PacketConn: socket}
+		candidateTransport := &quic.Transport{Conn: counting}
+		path, err := conn.AddPath(candidateTransport)
+		if err != nil {
+			t.Fatalf("round %d: AddPath: %v", round, err)
+		}
+		probeCtx, probeCancel := context.WithTimeout(ctx, 3*time.Second)
+		err = path.Probe(probeCtx)
+		probeCancel()
+		if err != nil {
+			// The budget is spent: the endpoint cannot answer a probe for this path. Closing the
+			// path detaches the candidate and the socket can be released.
+			if closeErr := path.Close(); closeErr != nil {
+				t.Fatalf("round %d: closing the abandoned candidate: %v", round, closeErr)
+			}
+			if closeErr := counting.Close(); closeErr != nil {
+				t.Fatal(closeErr)
+			}
+			t.Logf("migration %d could not be validated (%v) after %d applied moves", round+1, err, applied)
+			break
+		}
+		if err := path.Switch(); err != nil {
+			t.Fatalf("round %d: switch: %v", round, err)
+		}
+		if err := conn.RetireTransport(ctx, previousTransport); err != nil {
+			t.Fatalf("round %d: retire the previous transport: %v", round, err)
+		}
+		if err := previousSocket.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if previousPath != nil {
+			// Closing the path object gives the path's connection ID back.
+			if err := previousPath.Close(); err != nil {
+				t.Fatalf("round %d: close the previous path: %v", round, err)
+			}
+		}
+		previousTransport = candidateTransport
+		previousSocket = counting
+		previousPath = path
+		applied++
+		echo(t, stream, fmt.Sprintf("after-move-%d", applied))
+	}
+
+	if applied < 2 {
+		t.Fatalf("only %d migrations validated: A -> B -> C must be available on this pin", applied)
+	}
+	// Whatever the budget was, the connection is still one connection and the stream still carries
+	// bytes on the last applied path.
+	echo(t, stream, "after-the-last-applied-path")
+	if got := server.accepted.Load(); got != 1 {
+		t.Fatalf("the endpoint saw %d connections, want 1: repeated migration must not reconnect", got)
+	}
+}
+
 // TestConcurrentRetireWithCIDRotationIsRaceFree drives the runner-table access from both sides at
 // once: migrations attach runners and rotate connection IDs on the run loop while several
 // goroutines retire the handshake transport. Run under -race.

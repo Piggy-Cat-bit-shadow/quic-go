@@ -214,9 +214,12 @@ func (pm *pathManagerOutgoing) removePathImpl(id pathID) (*Transport, error) {
 	if !ok {
 		return nil, nil
 	}
-	if len(p.pathChallenges) > 0 {
-		pm.retireConnID(id)
-	}
+	// Retire the connection ID of this path whether or not a probe is still in flight. A validated
+	// path owns a connection ID too (GetConnIDForPath took one from the peer's queue and kept it),
+	// and a migration that never retires the IDs of the paths it left exhausts that queue: the
+	// peer only issues replacements in response to RETIRE_CONNECTION_ID, so after a few moves
+	// GetConnIDForPath finds nothing and the next candidate can never be challenged.
+	pm.retireConnID(id)
 	delete(pm.paths, id)
 	return p.tr, nil
 }

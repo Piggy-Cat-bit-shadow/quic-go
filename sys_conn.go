@@ -49,6 +49,16 @@ type OOBCapablePacketConn interface {
 
 var _ OOBCapablePacketConn = &net.UDPConn{}
 
+// SetDesiredBufferSizes is expected to be called by the owner of a socket that a conn passed to
+// the Transport hides by not implementing syscall.Conn.
+func SetDesiredBufferSizes(c syscall.RawConn) {
+	if !isDatagramSocket(c) {
+		return
+	}
+	_ = setReceiveBuffer(c)
+	_ = setSendBuffer(c)
+}
+
 // IOActivityConn is implemented by conns passed to the Transport that observe their own I/O.
 // On the optimized path, reads and writes go through the file descriptor and bypass the conn's
 // own methods; these callbacks are invoked instead, once per syscall: onRead with the size of

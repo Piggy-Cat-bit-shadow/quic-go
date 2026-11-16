@@ -18,10 +18,19 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
+      # The release line is built by the product with the official Go 1.27.4 toolchain, so
+      # that is the toolchain this job has to exercise. It is pinned rather than taken from
+      # go.mod: the go directive is a minimum language version (go 1.25.0) and pinning it
+      # would test that minimum instead of the compiler the binaries are actually built with.
+      # Go 1.27 is also where the build-tagged files under internal/handshake switch from the
+      # ClientHelloInfo callback wrappers to tls.QUICConfig.ClientHelloInfoConn, and those
+      # files are only compiled by a 1.27+ toolchain.
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: '1.27.4'
           cache: true
+      - name: Toolchain
+        run: go version
       - name: Build
         run: go build ./...
       - name: Test
@@ -29,3 +38,22 @@ jobs:
       - name: Race
         if: runner.os == 'Linux'
         run: go test -race -count=1 -timeout 15m ./...
+
+  # The go directive still promises that this module builds with Go 1.25, and the
+  # //go:build go1.25 && !go1.26 files only exist on that promise. Keep one job on the
+  # minimum version so the promise cannot rot silently while the release line moves on.
+  minimum-go:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Toolchain
+        run: go version
+      - name: Build
+        run: go build ./...
+      - name: Test
+        run: go test -count=1 -timeout 15m ./...

@@ -124,6 +124,7 @@ func TestServerClientHelloInfoCarriesTheConnection(t *testing.T) {
 	}
 	defer clientSocket.Close()
 	transport := &quic.Transport{Conn: clientSocket}
+	defer transport.Close()
 	clientConn, err := transport.Dial(ctx, listener.Addr(), clientTLS, nil)
 	if err != nil {
 		t.Fatalf("failed to dial: %s", err)
